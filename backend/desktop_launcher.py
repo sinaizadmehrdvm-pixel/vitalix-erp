@@ -82,7 +82,7 @@ def assert_port_available(host, port):
             probe.bind((host, port))
         except OSError as error:
             raise RuntimeError(
-                f"Port {port} is already in use. Close the other Vetrix instance and retry."
+                f"Port {port} is already in use. Close the other VITALIX instance and retry."
             ) from error
 
 
@@ -130,7 +130,7 @@ def main():
     ).start()
 
     print("=" * 58)
-    print(f"Vetrix ERP {APP_VERSION}")
+    print(f"VITALIX ERP {APP_VERSION}")
     print(f"Application: {network.local_url}")
     print(f"Mode: {'LAN server' if network.lan_enabled else 'local only'}")
     if network.lan_enabled:
@@ -138,7 +138,7 @@ def main():
         for origin in network.allowed_origins:
             print(f"  {origin}")
     print(f"Data folder: {target}")
-    print("Keep this window open while using Vetrix.")
+    print("Keep this window open while using VITALIX.")
     print("=" * 58)
     uvicorn.run(
         app,
@@ -153,7 +153,7 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as error:
-        print(f"Vetrix failed to start: {error}")
+        print(f"VITALIX failed to start: {error}")
         if os.getenv("VETRIX_NO_PAUSE") != "1":
             input("Press Enter to close...")
         raise
