@@ -75,6 +75,7 @@ export default function CompanyManagement() {
       toast.success(t.created);
       setName("");
       await load();
+      window.dispatchEvent(new Event("vitalix:companies-updated"));
     } catch (error) {
       toast.error(translateApiError(error.message, language) || error.message);
     } finally {
@@ -102,6 +103,7 @@ export default function CompanyManagement() {
       toast.success(t.updated);
       cancelEdit();
       await load();
+      window.dispatchEvent(new Event("vitalix:companies-updated"));
     } catch (error) {
       toast.error(translateApiError(error.message, language) || error.message);
     } finally {
