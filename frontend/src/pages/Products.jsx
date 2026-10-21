@@ -320,19 +320,34 @@ export default function Products() {
       setMessage("");
       setOfflineMode(false);
 
-      const cached = await getCache(productsCacheKey);
+      // Server data must not be blocked by an unavailable or incompatible
+      // browser cache; it is the authoritative source while connected.
+      let cached = [];
+      try {
+        cached = (await getCache(productsCacheKey)) || [];
+      } catch (cacheError) {
+        console.warn("Offline product cache unavailable:", cacheError);
+      }
       const data = await getProducts();
-
       const merged = mergeServerWithCache(
         Array.isArray(data) ? data : [],
         Array.isArray(cached) ? cached : []
       );
-
-      await saveCache(merged);
+      setProducts(merged);
+      try {
+        await setCache(productsCacheKey, merged);
+      } catch (cacheError) {
+        console.warn("Could not update offline product cache:", cacheError);
+      }
     } catch (e) {
       console.error("Products loading error:", e);
 
-      const cached = await getCache(productsCacheKey);
+      let cached = null;
+      try {
+        cached = await getCache(productsCacheKey);
+      } catch (cacheError) {
+        console.warn("Offline product cache unavailable:", cacheError);
+      }
 
       if (Array.isArray(cached)) {
         setProducts(cached.map(normalizeProduct));

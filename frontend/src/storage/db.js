@@ -1,11 +1,13 @@
 import { openDB } from "idb";
 
 const DB_NAME = "vetrix_erp_db";
-const DB_VERSION = 1;
 
 /* ---------------- DB INIT ---------------- */
 
-export const dbPromise = openDB(DB_NAME, DB_VERSION, {
+// Open the existing database at its current version. Explicitly requesting v1
+// throws VersionError on browsers that already upgraded it to v2.
+// New databases still start at v1 and run the upgrade initializer.
+export const dbPromise = openDB(DB_NAME, undefined, {
   upgrade(db) {
     if (!db.objectStoreNames.contains("expenses")) {
       db.createObjectStore("expenses", { keyPath: "id" });
