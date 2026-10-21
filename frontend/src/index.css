@@ -946,3 +946,38 @@ img, svg { max-width: 100%; }
 @page {
   margin: 14mm 12mm;
 }
+
+/* VITALIX: responsive amounts and long numeric values.
+   Preserve complete amounts on editable inputs and wide tables: wrapping
+   rather than truncation avoids misreading financial figures. */
+.erp-main :where(.grid > *, [class*="grid-cols-"] > *, .flex > *) {
+  min-width: 0;
+}
+.erp-main :where(.erp-money, [data-numeric], .tabular-nums) {
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(0.73rem, 1.1vw, 1.15rem);
+  max-width: 100%;
+}
+.erp-main :where(.erp-import-metrics > *, .erp-stat-card, .erp-kpi-card) {
+  min-width: 0;
+}
+.erp-main :where(.erp-import-metrics > *) :where(strong, b, output),
+.erp-main :where(.erp-stat-card, .erp-kpi-card) :where(strong, b, output) {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+  font-size: clamp(0.82rem, 1.45vw, 1.6rem);
+  line-height: 1.35;
+}
+.erp-main :where(th, td) :where(.erp-money, [data-numeric]) {
+  font-size: clamp(0.78rem, 1.05vw, 0.98rem);
+}
+@media (max-width: 768px) {
+  .erp-main :where(.erp-import-metrics, .erp-stats-grid) {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 145px), 1fr));
+  }
+  .erp-main :where(.erp-money, [data-numeric], .tabular-nums) {
+    font-size: clamp(0.72rem, 2.5vw, 0.94rem);
+  }
+}

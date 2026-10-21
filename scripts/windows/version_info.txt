@@ -14,12 +14,12 @@ VSVersionInfo(
       StringTable(
         u'040904B0',
         [
-          StringStruct(u'CompanyName', u'Vetrix'),
-          StringStruct(u'FileDescription', u'Vetrix ERP'),
+          StringStruct(u'CompanyName', u'VITALIX'),
+          StringStruct(u'FileDescription', u'VITALIX ERP'),
           StringStruct(u'FileVersion', u'1.4.1'),
-          StringStruct(u'InternalName', u'VetrixERP'),
-          StringStruct(u'OriginalFilename', u'VetrixERP.exe'),
-          StringStruct(u'ProductName', u'Vetrix ERP'),
+          StringStruct(u'InternalName', u'VITALIXERP'),
+          StringStruct(u'OriginalFilename', u'VITALIXERP.exe'),
+          StringStruct(u'ProductName', u'VITALIX ERP'),
           StringStruct(u'ProductVersion', u'1.4.1')
         ]
       )

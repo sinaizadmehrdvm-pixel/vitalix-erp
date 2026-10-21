@@ -1,10 +1,10 @@
-Vetrix ERP 1.4.1 — Windows Portable
+VITALIX ERP 1.4.1 — Windows Portable
 
 Local use (default and safest mode)
 
 1. Extract the ZIP into a permanent folder.
-2. Double-click VetrixERP.exe.
-3. Keep the Vetrix console window open while using the program.
+2. Double-click VITALIXERP.exe.
+3. Keep the VITALIX console window open while using the program.
 4. Your browser opens automatically at http://127.0.0.1:5173.
 5. On first run, create the administrator account and keep its password safe.
 
@@ -15,12 +15,12 @@ Server/client use on a trusted local network
 Use this only on a private, trusted LAN. The server computer stores the database and must remain running. Client computers use a browser and do not receive a separate database copy.
 
 1. Give the server computer a stable private IPv4 address, for example 192.168.1.20.
-2. Open PowerShell in the extracted Vetrix folder.
-3. Set the exact public browser origin and start Vetrix:
+2. Open PowerShell in the extracted VITALIX folder.
+3. Set the exact public browser origin and start VITALIX:
 
    $env:VETRIX_LAN_ENABLED="true"
    $env:VETRIX_ALLOWED_ORIGINS="http://192.168.1.20:5173,http://127.0.0.1:5173"
-   .\VetrixERP.exe
+   .\VITALIXERP.exe
 
 4. On Windows Firewall, allow inbound TCP ports 5173 and 8001 only for the Private network profile.
 5. On each client, open http://192.168.1.20:5173 and sign in with an authorized account.
@@ -33,7 +33,7 @@ Set VETRIX_WEB_PORT and VETRIX_API_PORT before startup if the defaults conflict.
 
 Security checklist
 
-- Use only a trusted private network; do not expose Vetrix directly to the internet.
+- Use only a trusted private network; do not expose VITALIX directly to the internet.
 - Keep Windows Firewall scoped to Private networks and, when possible, to the local subnet.
 - Never use "*" as an allowed origin.
 - Create separate named user accounts and grant only required roles.
@@ -49,8 +49,8 @@ Data location
 - uploads: local attachments
 - desktop-config.json: private desktop configuration
 
-Back up the entire data folder regularly. Before moving to another PC, close Vetrix and copy the data folder plus a verified application backup. Never run two server instances against the same copied database.
+Back up the entire data folder regularly. Before moving to another PC, close VITALIX and copy the data folder plus a verified application backup. Never run two server instances against the same copied database.
 
 If Windows Defender displays a warning for an unsigned internal build, verify the SHA-256 file included with the download before running it. Public distribution should use a code-signing certificate.
 
-To stop Vetrix, close the Vetrix console window.
+To stop VITALIX, close the VITALIX console window.
