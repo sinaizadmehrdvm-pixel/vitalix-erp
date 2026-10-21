@@ -1273,10 +1273,10 @@ def apply_import(batch_id: str, request: Request):
                 result = conn.execute(text("""
                     INSERT INTO products
                       (name, code, barcode, barcode2, barcode3, sku, brand, unit, buy_price, sell_price,
-                       price, stock, min_stock, count_in_pack, main_category, sub_category, image, description, company_id)
+                       price, stock, min_stock, count_in_pack, main_category, sub_category, image, description, is_active, company_id)
                     VALUES
                       (:name, :code, :barcode, :barcode2, :barcode3, :sku, :brand, :unit, :buy_price, :sell_price,
-                       :sell_price, :stock, :min_stock, :count_in_pack, :main_category, :sub_category, '', :description, :company_id)
+                       :sell_price, :stock, :min_stock, :count_in_pack, :main_category, :sub_category, '', :description, 1, :company_id)
                 """), {**item, "company_id": company_id})
                 product_id = result.lastrowid
                 _post_product_opening(conn, product_id, item["name"], item["stock"], item["buy_price"], policy, company_id)
