@@ -21,6 +21,7 @@ jobs:
       - name: Update vulnerable dependencies without major-force
         working-directory: frontend
         run: |
+          npm install -g npm@11
           npm ci
           npm update
           npm audit --audit-level=high
