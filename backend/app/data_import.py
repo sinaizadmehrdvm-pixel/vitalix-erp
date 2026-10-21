@@ -1746,6 +1746,8 @@ _PARASAY_STAGE_DEFS = {
               "expected": 18},
     "gl_residual": {"required": ("MoienID", "MoienCode", "MoienName", "OtherNetBalance"),
                     "expected": 283},
+    "chart_total": {"required": ("ID", "Code", "AccountName"), "expected": 43},
+    "chart_moien": {"required": ("ID", "Code", "AccountName", "TotalBookID"), "expected": 283},
 }
 
 
@@ -1765,6 +1767,16 @@ def _parasay_stage_validate(kind, raw):
         if len(rows) != _PARASAY_STAGE_DEFS[kind]["expected"]:
             raise ValueError("Unexpected original PARASAY row count")
         identifiers = []
+        if kind in ("chart_total", "chart_moien"):
+            for row in rows:
+                if not row["ID"].isdigit() or not row["Code"].strip():
+                    raise ValueError("Invalid account identity")
+                identifiers.append(row["ID"])
+            if len(set(identifiers)) != len(identifiers):
+                raise ValueError("Duplicate account source IDs")
+            return rows, {"count": len(rows), "nonzero": 0, "source_total": "0",
+                          "code_duplicates": len(rows)-len({r["Code"] for r in rows}),
+                          "is_accounting_posted": False}
         nonzero = 0
         total = Decimal(0)
         negative_stock = 0
@@ -1896,6 +1908,8 @@ _PARASAY_PACKAGE_FILES = {
     "inventory": "PARASAY7_ALL_GOODS.csv",
     "banks": "PARASAY_Bank_Final_Balances.csv",
     "gl_residual": "PARASAY_Other_Accounts_1405-07-29.csv",
+    "chart_total": "PARASAY_TotalBookAccounts.csv",
+    "chart_moien": "PARASAY_MoienBookAccounts.csv",
     "cheques": "VITALIX_PARASAY_28_OPEN_CHECKS_STAGING.csv",
 }
 
@@ -1989,8 +2003,9 @@ async def apply_parasay_package(request: Request, file: UploadFile = File(...),
         if any(_parasay_package_existing(conn, company).values()):
             raise HTTPException(409, "At least one PARASAY source already staged; duplicate package blocked")
         now = _now()
-        id_columns = {"inventory": "ID", "banks": "BankAccountID", "gl_residual": "MoienID"}
-        for kind in ("inventory", "banks", "gl_residual"):
+        id_columns = {"inventory": "ID", "banks": "BankAccountID", "gl_residual": "MoienID",
+                      "chart_total": "ID", "chart_moien": "ID"}
+        for kind in id_columns:
             for item in records[kind]:
                 conn.execute(text("""
                     INSERT INTO parasay_migration_staging
