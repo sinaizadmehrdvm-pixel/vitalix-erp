@@ -18,6 +18,7 @@ import {
 
 import toast from "react-hot-toast";
 import { useLanguage } from "../localization/useLanguage";
+import { useAuth } from "../auth/AuthContext";
 import { confirmAction } from "../components/ui/confirmService";
 import {
   createProduct,
@@ -175,38 +176,20 @@ function normalizeProduct(item = {}) {
 }
 
 function mergeServerWithCache(serverItems = [], cachedItems = []) {
-  const cacheMap = new Map();
-
-  cachedItems.map(normalizeProduct).forEach((item) => {
-    cacheMap.set(productKey(item), item);
-    if (item.barcode) cacheMap.set(String(item.barcode), item);
-    if (item.code) cacheMap.set(String(item.code), item);
-  });
-
-  return serverItems.map((serverRaw) => {
-    const server = normalizeProduct(serverRaw);
-    const cached =
-      cacheMap.get(productKey(server)) ||
-      cacheMap.get(String(server.barcode || "")) ||
-      cacheMap.get(String(server.code || ""));
-
-    if (!cached) return server;
-
-    return normalizeProduct({
-      ...cached,
-      ...server,
-      buy_price:
-        toNumber(server.buy_price) > 0 ? server.buy_price : cached.buy_price,
-      min_stock:
-        toNumber(server.min_stock) > 0 ? server.min_stock : cached.min_stock,
-      unit: server.unit && server.unit !== "عدد" ? server.unit : cached.unit || server.unit,
-      brand: server.brand || cached.brand,
-      sku: server.sku || cached.sku,
-      main_category: server.main_category || cached.main_category,
-      sub_category: server.sub_category || cached.sub_category,
-      image: server.image || cached.image,
-    });
-  });
+  // The server is authoritative whenever online. Never restore stale cached
+  // prices, stock, or metadata over a freshly fetched server record.
+  // Only retain genuinely pending offline changes for later synchronization.
+  const merged = serverItems.map(normalizeProduct);
+  const pending = cachedItems.map(normalizeProduct).filter((item) => item.pending_sync);
+  for (const item of pending) {
+    const index = merged.findIndex((server) =>
+      (item.id && String(server.id) === String(item.id)) ||
+      (item.code && server.code === item.code)
+    );
+    if (index >= 0) merged[index] = item;
+    else merged.push(item);
+  }
+  return merged;
 }
 
 function Field({ label, children, hint }) {
@@ -233,6 +216,8 @@ export default function Products() {
       ? unitOptionsTr
       : unitOptionsEn;
 
+  const { activeCompany, user } = useAuth();
+  const productsCacheKey = `${PRODUCTS_CACHE_KEY}:${activeCompany?.id || user?.company_id || "default"}`;
   const [products, setProducts] = useState([]);
   const [searchParams] = useSearchParams();
   const [search, setSearch] = useState(() => searchParams.get("q") || "");
@@ -325,7 +310,7 @@ export default function Products() {
 
   async function saveCache(items) {
     const normalized = Array.isArray(items) ? items.map(normalizeProduct) : [];
-    await setCache(PRODUCTS_CACHE_KEY, normalized);
+    await setCache(productsCacheKey, normalized);
     setProducts(normalized);
   }
 
@@ -335,7 +320,7 @@ export default function Products() {
       setMessage("");
       setOfflineMode(false);
 
-      const cached = await getCache(PRODUCTS_CACHE_KEY);
+      const cached = await getCache(productsCacheKey);
       const data = await getProducts();
 
       const merged = mergeServerWithCache(
@@ -347,7 +332,7 @@ export default function Products() {
     } catch (e) {
       console.error("Products loading error:", e);
 
-      const cached = await getCache(PRODUCTS_CACHE_KEY);
+      const cached = await getCache(productsCacheKey);
 
       if (Array.isArray(cached)) {
         setProducts(cached.map(normalizeProduct));
