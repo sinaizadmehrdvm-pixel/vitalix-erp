@@ -1,4 +1,4 @@
-name: Vetrix CI
+name: VITALIX CI
 
 on:
   pull_request:
