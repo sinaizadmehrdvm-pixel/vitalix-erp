@@ -2059,6 +2059,14 @@ def _ensure_parasay_finalize_table(conn):
             PRIMARY KEY(company_id,scope)
         )
     """))
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS parasay_bank_account_links (
+            company_id INTEGER NOT NULL,
+            source_bank_id INTEGER NOT NULL,
+            target_bank_id INTEGER NOT NULL,
+            PRIMARY KEY(company_id,source_bank_id)
+        )
+    """))
 
 
 def _parasay_account_type(code):
@@ -2343,7 +2351,7 @@ def finalize_parasay_stock_and_ledger(request: Request,
         )
         now=_now()
         for bank in banks:
-            conn.execute(text("""
+            bank_result=conn.execute(text("""
                 INSERT INTO bank_accounts
                 (name,bank_name,account_number,iban,ledger_account_code,
                  opening_balance,active,created_at,company_id)
@@ -2351,6 +2359,12 @@ def finalize_parasay_stock_and_ledger(request: Request,
             """),{"name":"پاراسای | "+bank["BankName"],"bank":bank["BankName"],
                    "balance":float(Decimal(bank["NetBalance"])),
                    "now":now,"company":company})
+            conn.execute(text("""
+                INSERT INTO parasay_bank_account_links
+                (company_id,source_bank_id,target_bank_id)
+                VALUES (:company,:source,:target)
+            """),{"company":company,"source":int(bank["BankAccountID"]),
+                   "target":bank_result.lastrowid})
         for good in goods:
             product=by_code[good["Code"]]
             quantity=Decimal(good["NowAmount"] or "0")
