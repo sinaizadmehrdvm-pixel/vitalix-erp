@@ -364,6 +364,12 @@ export default function DataImportCenter() {
             حساب‌های بانک: {pd(parasayFinalReview.bank_accounts)} |
             مانده سایر معین‌ها: {pd(parasayFinalReview.residual_net_irr)} ریال |
             چک‌های ثبت‌شده در فهرست اولیه: {pd(parasayFinalReview.cheques_staged)}</p>
+          <p style={{fontSize:13,color:"var(--erp-warning)"}}>
+            ارزش انبار در دفتر معین پاراسای: {pd(parasayFinalReview.source_gl_inventory_irr)} ریال |
+            حاصل تعداد × میانگین خرید کالاها: {pd(parasayFinalReview.source_stock_buyavg_irr)} ریال |
+            اختلاف ارزشی نیازمند بررسی: {pd(parasayFinalReview.source_stock_valuation_gap_irr)} ریال.
+            انتقال، مبلغ دفتر را جدا از مقادیر فیزیکی عیناً حفظ می‌کند؛ اختلاف بهای هر کالا را خودکار اصلاح نمی‌کند.
+          </p>
           <p style={{fontSize:13,color:"var(--erp-warning)"}}>دو کالای دارای موجودی منفی مبدأ و حساب ۷۵۷۹ با عنوان آورده شخصی باید آگاهانه بررسی شوند. تطبیق ارزش انبار به تفکیک کالا هنوز مستقل از تراز کل است.</p>
           {(parasayFinalReview.blockers||[]).map((block,idx)=><p key={idx} style={{fontSize:13,color:"var(--erp-danger)"}}>• {block}</p>)}
           {!parasayFinalReview.chart_finalized ? <button type="button" disabled={parasayBusy} onClick={finalizeParasayChart} style={{padding:"9px 12px",borderRadius:10,fontWeight:700}}>ثبت کدینگ ۳۲۶ حساب براساس شناسه پاراسای (بدون سند)</button>
