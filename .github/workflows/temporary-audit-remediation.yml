@@ -1,0 +1,38 @@
+name: Temporary frontend dependency remediation
+on:
+  push:
+    branches:
+      - fix/product-import-and-live-refresh-20261021
+permissions:
+  contents: write
+jobs:
+  repair:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Update vulnerable dependencies without major-force
+        working-directory: frontend
+        run: |
+          npm ci
+          npm audit fix
+          npm audit --audit-level=high
+          npm run audit:fetch
+          npm run audit:routes
+          npm run build
+      - name: Commit only verified dependency manifests
+        run: |
+          if ! git diff --quiet -- frontend/package-lock.json frontend/package.json; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add frontend/package.json frontend/package-lock.json
+            git commit -m 'chore: fix audited frontend dependencies'
+            git push origin HEAD:fix/product-import-and-live-refresh-20261021
+          fi
