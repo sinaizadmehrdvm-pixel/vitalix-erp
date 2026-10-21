@@ -49,9 +49,9 @@ class ParasayFinalizeTests(unittest.TestCase):
                         19585 if i==3 else 1 if i<=440 else 0)} for i in range(1,1491)]
             banks=[{"BankAccountID":str(i),"NetBalance":str(22036831119 if i==1 else 1)}
                    for i in range(1,19)]
-            amounts={104:22036831136,117:3509040000,193:-26415000000}
-            amounts.update({i:1 for i in range(1,9)})
-            amounts[9]=-34910555065
+            amounts={104:22036831136,117:3509040000,130:56508836736,193:-26415000000}
+            amounts.update({i:1 for i in range(1,8)})
+            amounts[9]=-91419391800
             residual=[{"MoienID":str(i),"MoienCode":str(i),
                        "OtherNetBalance":str(amounts.get(i,0))}
                       for i in range(1,284)]
