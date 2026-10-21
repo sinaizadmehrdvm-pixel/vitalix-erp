@@ -1,4 +1,4 @@
-# Vetrix ERP — Windows setup
+# VITALIX ERP — Windows setup
 
 ## Requirements
 
@@ -9,12 +9,12 @@
 
 ## First installation
 
-1. Extract the Vetrix project to a permanent folder such as `C:\VetrixERP`.
+1. Extract the VITALIX project to a permanent folder such as `C:\VetrixERP`.
 2. Double-click `scripts\windows\setup-vetrix.bat`.
 3. Wait until **Setup completed successfully** appears.
 4. Open the generated `.env` file and replace `VETRIX_JWT_SECRET` with a private random value of at least 32 characters.
 5. Double-click `scripts\windows\start-vetrix.bat`.
-6. Keep the Backend and Frontend terminal windows open while using Vetrix.
+6. Keep the Backend and Frontend terminal windows open while using VITALIX.
 7. The browser opens at `http://127.0.0.1:5173`.
 
 ## Validate before real use
