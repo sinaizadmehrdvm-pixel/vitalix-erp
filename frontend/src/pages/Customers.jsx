@@ -1786,7 +1786,7 @@ function AutoFitSummaryMoney({ value, color }) {
       const available = wrapper.clientWidth;
       const required = text.scrollWidth;
       if (!available || !required) return;
-      const next = Math.max(10, Math.min(26, Math.floor(26 * available / (required + 2))));
+      const next = Math.max(6, Math.min(26, Math.floor(26 * available / (required + 2))));
       text.style.fontSize = next + "px";
     };
 
@@ -1824,27 +1824,25 @@ function SummaryCard({ icon, title, value, suffix, color, colorClassName, isCoun
         boxShadow: "var(--erp-elevation-1), inset 0 1px 0 0 var(--erp-surface-highlight)",
       }}
     >
-      <div className="flex justify-between items-center gap-3 flex-wrap">
-        <div style={{ flex: "1 1 0", minWidth: 0 }}>
-          <div className="text-[var(--erp-muted)] text-sm font-bold">{title}</div>
-          <div className={`mt-3 font-black${colorClassName ? ` ${colorClassName}` : ""}`}>
-            {isCount ? (
-              <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "clamp(18px, 2vw, 26px)", color }}>
-                <NumberOnly value={value} />
-              </span>
-            ) : (
-              <span style={{ display: "block", minWidth: 0, width: "100%" }}>
-                <AutoFitSummaryMoney value={value} color={color} />
-                {suffix && <span className="text-xs font-normal" style={{ color: "var(--erp-muted)" }}>{suffix}</span>}
-              </span>
-            )}
-          </div>
-        </div>
-
-        <div className="w-12 h-12 shrink-0 rounded-[var(--erp-radius-md)] flex items-center justify-center bg-[var(--erp-glow)] text-[var(--erp-accent)]">
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+        <div className="text-[var(--erp-muted)] text-sm font-bold">{title}</div>
+        <div className="w-10 h-10 shrink-0 rounded-[var(--erp-radius-md)] flex items-center justify-center bg-[var(--erp-glow)] text-[var(--erp-accent)]">
           {icon}
         </div>
       </div>
+      <div className={`mt-3 font-black${colorClassName ? ` ${colorClassName}` : ""}`} style={{ minWidth: 0, width: "100%" }}>
+        {isCount ? (
+          <span style={{ fontVariantNumeric: "tabular-nums", fontSize: "clamp(18px, 2vw, 26px)", color }}>
+            <NumberOnly value={value} />
+          </span>
+        ) : (
+          <span style={{ display: "block", minWidth: 0, width: "100%" }}>
+            <AutoFitSummaryMoney value={value} color={color} />
+            {suffix && <span className="text-xs font-normal" style={{ color: "var(--erp-muted)" }}>{suffix}</span>}
+          </span>
+        )}
+      </div>
+div>
     </div>
   );
 }
