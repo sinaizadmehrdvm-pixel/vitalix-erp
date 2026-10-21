@@ -1608,6 +1608,10 @@ async def preview_existing_customer_opening(
                 if exists:
                     issues.append(f"PARASAY code {code}: customer already has accounting entries; opening not safe")
                 nonzero.append(record)
+        # Opening must belong to the populated Hyper Doctor company, not
+        # another company that happens to contain matching customer notes.
+        if len(customer_rows) != 400:
+            issues.append("Active company must have exactly 400 matching imported customers")
         if len(matched) != 400 or len(nonzero) != 98:
             issues.append("Expected 400 matched customers and 98 with a nonzero balance")
         prior = conn.execute(text("""
@@ -1672,14 +1676,15 @@ def apply_existing_customer_opening(batch_id: str, request: Request, confirm: st
         # Recheck all affected accounts inside the same write transaction.
         for item in rows:
             matched = conn.execute(text("""
-                SELECT id FROM customers WHERE id=:id AND company_id=:cid
-                  AND notes LIKE :code_marker
-            """), {"id":item["customer_id"],"cid":company_id,
-                   "code_marker":"%کد پاراسای: "+item["code"]+"%"}).first()
+                SELECT id, notes FROM customers WHERE id=:id AND company_id=:cid
+            """), {"id":item["customer_id"],"cid":company_id}).mappings().first()
+            import re
+            code_match = re.search(r"کد\s*پاراسای\s*:\s*([0-9۰-۹٠-٩]+)", (matched or {}).get("notes") or "")
+            exact_match = bool(code_match and _normalize_digits(code_match.group(1)) == item["code"])
             has_entries = conn.execute(text("""
                 SELECT COUNT(*) FROM accounting_entries WHERE company_id=:cid AND customer_id=:id
             """), {"cid":company_id,"id":item["customer_id"]}).scalar()
-            if not matched or has_entries:
+            if not exact_match or has_entries:
                 raise HTTPException(status_code=409, detail="Customer code mapping or opening state has changed; preview again")
         _ensure_posting_schema(conn)
         created = datetime(2026, 10, 21, 23, 59, 59)
