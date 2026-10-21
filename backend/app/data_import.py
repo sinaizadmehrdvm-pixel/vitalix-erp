@@ -1888,3 +1888,134 @@ def parasay_staging_status(request: Request):
             "staged_counts": {r["kind"]: r["staged_count"] for r in counts},
             "financial_posting_performed": False,
             "warning": "Only source snapshots staged. GL/stock movements require reconciled crosswalk."}
+
+
+# Single-upload PARASAY source package: all four sources are validated first;
+# application is one SQLite transaction. No operational financial writes.
+_PARASAY_PACKAGE_FILES = {
+    "inventory": "PARASAY7_ALL_GOODS.csv",
+    "banks": "PARASAY_Bank_Final_Balances.csv",
+    "gl_residual": "PARASAY_Other_Accounts_1405-07-29.csv",
+    "cheques": "VITALIX_PARASAY_28_OPEN_CHECKS_STAGING.csv",
+}
+
+
+def _read_parasay_package(raw):
+    import zipfile
+    import hashlib
+    from app.accounting.treasury import _validate_parasay_cheques
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            names = set(archive.namelist())
+            if not set(_PARASAY_PACKAGE_FILES.values()).issubset(names) or "manifest.json" not in names:
+                raise ValueError("Missing files from official PARASAY package")
+            manifest = json.loads(archive.read("manifest.json"))
+            if (manifest.get("company") != "Hyper Doctor"
+                    or manifest.get("cutoff_jalali") != "1405/07/29"
+                    or manifest.get("mode") != "staging_only_no_financial_posting"):
+                raise ValueError("Invalid company/cutoff/posting mode")
+            validated, summary = {}, {}
+            for kind, filename in _PARASAY_PACKAGE_FILES.items():
+                info = archive.getinfo(filename)
+                if info.file_size > MAX_BYTES or info.file_size < 1:
+                    raise ValueError("Invalid source file size")
+                source = archive.read(filename)
+                expected = manifest["files"][filename]["sha256"]
+                if hashlib.sha256(source).hexdigest() != expected:
+                    raise ValueError("Package checksum error: " + filename)
+                if kind == "cheques":
+                    rows, counts, totals = _validate_parasay_cheques(source)
+                    validated[kind] = rows
+                    summary[kind] = {"count": len(rows), "received": counts["received"],
+                                     "payable": counts["payable"],
+                                     "received_irr": str(totals["received"]),
+                                     "payable_irr": str(totals["payable"]),
+                                     "unknown_party": sum(r["mapping_status"] == "PARTY_UNKNOWN" for r in rows)}
+                else:
+                    rows, checks = _parasay_stage_validate(kind, source)
+                    validated[kind] = rows
+                    summary[kind] = checks
+            return validated, summary
+    except (OSError, KeyError, ValueError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+        raise HTTPException(422, detail=str(error))
+
+
+def _parasay_package_existing(conn, company):
+    from app.accounting.treasury import _ensure_parasay_opening_cheques
+    _ensure_parasay_stage(conn)
+    _ensure_parasay_opening_cheques(conn)
+    existing = {
+        row["kind"]: row["total"]
+        for row in conn.execute(text("""
+            SELECT kind, COUNT(*) AS total FROM parasay_migration_staging
+            WHERE company_id=:company GROUP BY kind
+        """), {"company": company}).mappings()
+    }
+    existing["cheques"] = conn.execute(text("""
+        SELECT COUNT(*) FROM parasay_opening_cheques WHERE company_id=:company
+    """), {"company": company}).scalar()
+    return existing
+
+
+@router.post("/parasay-package/preview")
+async def preview_parasay_package(request: Request, file: UploadFile = File(...)):
+    _require_admin(request)
+    raw = await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:
+        raise HTTPException(413, "Package too large")
+    records, summary = _read_parasay_package(raw)
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        existing = _parasay_package_existing(conn, company)
+    return {"company_id": company, "summary": summary,
+            "existing": existing, "can_apply": not any(existing.values()),
+            "no_accounting_posting": True,
+            "warning": "Only source snapshots will be staged. Two negative stocks, 12 unmapped cheques, and ambiguous bank account 7579 require review."}
+
+
+@router.post("/parasay-package/apply")
+async def apply_parasay_package(request: Request, file: UploadFile = File(...),
+                               confirm: str = ""):
+    _require_admin(request)
+    if confirm != "STAGE_FOUR_SOURCES_NO_FINANCIAL_CHANGES":
+        raise HTTPException(400, "Explicit no-posting confirmation required")
+    raw = await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:
+        raise HTTPException(413, "Package too large")
+    records, summary = _read_parasay_package(raw)
+    from app.accounting.treasury import _ensure_parasay_opening_cheques
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        if any(_parasay_package_existing(conn, company).values()):
+            raise HTTPException(409, "At least one PARASAY source already staged; duplicate package blocked")
+        now = _now()
+        id_columns = {"inventory": "ID", "banks": "BankAccountID", "gl_residual": "MoienID"}
+        for kind in ("inventory", "banks", "gl_residual"):
+            for item in records[kind]:
+                conn.execute(text("""
+                    INSERT INTO parasay_migration_staging
+                        (company_id,kind,source_id,payload_json,created_at)
+                    VALUES (:company,:kind,:id,:payload,:now)
+                """), {"company": company, "kind": kind, "id": item[id_columns[kind]],
+                       "payload": json.dumps(item, ensure_ascii=False), "now": now})
+        _ensure_parasay_opening_cheques(conn)
+        for item in records["cheques"]:
+            conn.execute(text("""
+                INSERT INTO parasay_opening_cheques
+                    (company_id,source_check_id,cheque_number,due_date_jalali,
+                     amount_irr,direction,original_state,bank_name_original,
+                     source_party_id,party_name_original,source_bank_id,
+                     mapping_status,created_at)
+                VALUES
+                    (:company,:id,:number,:due,:amount,:direction,:state,
+                     :bank,:party,:partyname,:bankid,:mapping,:now)
+            """), {"company": company, "id": int(item["source_check_id"]),
+                   "number": item["cheque_number"], "due": item["due_date_jalali"],
+                   "amount": item["amount_irr"], "direction": item["direction"],
+                   "state": item["original_state"], "bank": item.get("bank_name_original", ""),
+                   "party": item["source_party_id"], "partyname": item.get("party_name_original", ""),
+                   "bankid": item.get("source_bank_id", ""), "mapping": item["mapping_status"],
+                   "now": now})
+    return {"status": "staged", "company_id": company, "summary": summary,
+            "no_gl_posting": True, "no_inventory_changes": True,
+            "no_customer_balance_changes": True}
