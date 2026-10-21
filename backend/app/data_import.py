@@ -1507,3 +1507,228 @@ def delete_import_batch(batch_id: str, request: Request):
         conn.execute(text("DELETE FROM data_import_batches WHERE id=:id"), {"id": batch_id})
         conn.execute(text("DELETE FROM data_import_product_links WHERE batch_id=:id"), {"id": batch_id})
         return {"status": "deleted", "batch_id": batch_id}
+
+
+
+# Existing-customer PARASAY opening balances. Deliberately separate from
+# /preview/customers: that route INSERTS new customers and cannot update
+# existing subledgers. Preview performs no accounting writes.
+@router.post("/customer-opening/preview")
+async def preview_existing_customer_opening(
+    request: Request,
+    file: UploadFile = File(...),
+    opening_date: str = Form("2026-10-21"),
+    source_cutoff: str = Form("1405/07/29"),
+):
+    import csv
+    from decimal import Decimal, InvalidOperation
+    actor = _require_admin(request)
+    company_id = current_company_id(request)
+    if opening_date != "2026-10-21" or source_cutoff != "1405/07/29":
+        raise HTTPException(status_code=400, detail="PARASAY source snapshot is fixed at 1405/07/29 (2026-10-21)")
+    raw = await file.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File too large")
+    try:
+        data = raw.decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(data), delimiter="؛")
+        mandatory = {"CustomerID", "CustomerCode", "AccountID", "BalanceAmount", "BalanceState", "VerifiedNetBalance"}
+        if not mandatory.issubset(reader.fieldnames or ()):
+            raise HTTPException(status_code=400, detail="Expected original PARASAY_400_Customer_Balances.csv with semicolon-Persian delimiter")
+        source_rows = list(reader)
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="CSV must be UTF-8")
+    if len(source_rows) != 400:
+        raise HTTPException(status_code=400, detail="Expected exactly 400 source customers")
+    parsed, issues, codes = [], [], set()
+    debit_total = credit_total = 0
+    from decimal import Decimal
+    for idx, row in enumerate(source_rows, 2):
+        code = _clean(row.get("CustomerCode"))
+        if not code or code in codes:
+            issues.append(f"row {idx}: missing/duplicate PARASAY customer code")
+            continue
+        codes.add(code)
+        try:
+            amount = Decimal(str(row["BalanceAmount"]))
+            signed = Decimal(str(row["VerifiedNetBalance"]))
+            if not amount.is_finite() or not signed.is_finite() or amount < 0:
+                raise ValueError("invalid amount")
+        except (ValueError, InvalidOperation, TypeError):
+            issues.append(f"row {idx}: invalid amount")
+            continue
+        state = _clean(row.get("BalanceState"))
+        expected = amount if state == "بد" else -amount if state == "بس" else Decimal(0) if amount == 0 else None
+        if expected is None or expected != signed:
+            issues.append(f"row {idx}: account balance disagrees with verified ledger")
+            continue
+        cents = signed * 100
+        if cents != cents.to_integral_value():
+            issues.append(f"row {idx}: unsupported fraction of a cent")
+            continue
+        if signed > 0: debit_total += signed
+        if signed < 0: credit_total -= signed
+        parsed.append({"code": code, "account_id": _clean(row.get("AccountID")),
+                       "amount": str(signed)})
+    if len(codes) != 400 or debit_total != Decimal("39668475516") or credit_total != Decimal("3888791595"):
+        issues.append("Source control totals or unique customer count do not match verified PARASAY snapshot")
+    with engine.begin() as conn:
+        _ensure_schema(conn)
+        company = conn.execute(text("SELECT name, is_active FROM companies WHERE id=:cid"),
+                               {"cid": company_id}).mappings().first()
+        if not company or not company["is_active"] or "هایپر" not in (company["name"] or ""):
+            raise HTTPException(status_code=403, detail="PARASAY opening is restricted to active Hyper Doctor company")
+        # Company selection is taken solely from authenticated request context,
+        # not a company name supplied in an uploaded file.
+        customer_rows = conn.execute(text("""
+            SELECT id, name, notes FROM customers WHERE company_id=:company_id
+        """), {"company_id": company_id}).mappings().all()
+        import re
+        by_code = {}
+        ambiguous = set()
+        for cust in customer_rows:
+            match = re.search(r"کد\s*پاراسای\s*:\s*([0-9۰-۹٠-٩]+)", cust["notes"] or "")
+            if not match:
+                continue
+            code = _normalize_digits(match.group(1))
+            if code in by_code:
+                ambiguous.add(code)
+            by_code[code] = {"id": cust["id"], "name": cust["name"]}
+        matched, nonzero = [], []
+        for item in parsed:
+            code = item["code"]
+            cust = by_code.get(code)
+            if not cust or code in ambiguous:
+                issues.append(f"PARASAY code {code}: missing or ambiguous customer in active company")
+                continue
+            signed = Decimal(item["amount"])
+            record = {**item, "customer_id": cust["id"], "name": cust["name"]}
+            matched.append(record)
+            if signed:
+                exists = conn.execute(text("""
+                    SELECT COUNT(*) FROM accounting_entries
+                    WHERE company_id=:company_id AND customer_id=:customer_id
+                """), {"company_id":company_id,"customer_id":cust["id"]}).scalar()
+                if exists:
+                    issues.append(f"PARASAY code {code}: customer already has accounting entries; opening not safe")
+                nonzero.append(record)
+        # Opening must belong to the populated Hyper Doctor company, not
+        # another company that happens to contain matching customer notes.
+        if len(customer_rows) != 400:
+            issues.append("Active company must have exactly 400 matching imported customers")
+        if len(matched) != 400 or len(nonzero) != 98:
+            issues.append("Expected 400 matched customers and 98 with a nonzero balance")
+        prior = conn.execute(text("""
+            SELECT COUNT(*) FROM data_import_batches
+            WHERE company_id=:company_id AND entity_type='existing_customer_opening'
+              AND status='applied'
+        """), {"company_id": company_id}).scalar()
+        if prior:
+            issues.append("An existing-customer opening batch was already applied for this company")
+        batch_id = str(uuid.uuid4())
+        conn.execute(text("""
+            INSERT INTO data_import_batches
+              (id, entity_type, file_name, status, total_rows, valid_rows, error_rows,
+               duplicate_rows, payload_json, result_json, created_by, created_at, meta_json, company_id)
+            VALUES
+              (:id, 'existing_customer_opening', :name, 'previewed', :total, :valid,
+               :errors, 0, :payload, '', :actor, :created, :meta, :company)
+        """), {"id":batch_id,"name":file.filename or "PARASAY balances",
+               "total":len(source_rows),"valid":len(matched),"errors":len(issues),
+               "payload":json.dumps(nonzero,ensure_ascii=False),
+               "actor":actor,"created":_now(),"company":company_id,
+               "meta":json.dumps({"opening_date":opening_date,"source_cutoff":source_cutoff,
+                                  "debit":str(debit_total),"credit":str(credit_total),
+                                  "issues":issues},ensure_ascii=False)})
+    return {"batch_id":batch_id,"company_id":company_id,"source_cutoff":source_cutoff,
+            "matched_customers":len(matched),"nonzero_customers":len(nonzero),
+            "debit":str(debit_total),"credit":str(credit_total),
+            "net":str(debit_total-credit_total),
+            "issues":issues,"can_apply":not issues,
+            "balances":[{"code":x["code"],"name":x["name"],"amount":x["amount"]} for x in nonzero],
+            "instruction":"Do not apply until the company and all 98 balances have been reviewed."}
+
+
+@router.post("/customer-opening/apply/{batch_id}")
+def apply_existing_customer_opening(batch_id: str, request: Request, confirm: str):
+    from decimal import Decimal
+    actor = _require_admin(request)
+    company_id = current_company_id(request)
+    if confirm != "APPLY_1405_07_29":
+        raise HTTPException(status_code=400, detail="Explicit cutoff confirmation required")
+    with engine.begin() as conn:
+        _ensure_schema(conn)
+        company = conn.execute(text("SELECT name, is_active FROM companies WHERE id=:cid"),
+                               {"cid": company_id}).mappings().first()
+        if not company or not company["is_active"] or "هایپر" not in (company["name"] or ""):
+            raise HTTPException(status_code=403, detail="PARASAY opening is restricted to active Hyper Doctor company")
+        batch = conn.execute(text("""
+            SELECT * FROM data_import_batches WHERE id=:id AND company_id=:company_id
+              AND entity_type='existing_customer_opening'
+        """), {"id":batch_id,"company_id":company_id}).mappings().first()
+        if not batch or batch["created_by"] != actor:
+            raise HTTPException(status_code=404, detail="Opening batch not found for current operator/company")
+        if batch["status"] != "previewed":
+            raise HTTPException(status_code=409, detail="Batch was already applied")
+        meta = json.loads(batch["meta_json"])
+        if batch["error_rows"] or meta["issues"]:
+            raise HTTPException(status_code=409, detail="Preview errors must be resolved")
+        prior = conn.execute(text("""
+            SELECT COUNT(*) FROM data_import_batches
+            WHERE company_id=:cid AND entity_type='existing_customer_opening' AND status='applied'
+        """), {"cid":company_id}).scalar()
+        if prior:
+            raise HTTPException(status_code=409, detail="Opening was already imported")
+        rows = json.loads(batch["payload_json"])
+        if len(rows) != 98:
+            raise HTTPException(status_code=409, detail="Nonzero count has changed")
+        # Recheck all affected accounts inside the same write transaction.
+        for item in rows:
+            matched = conn.execute(text("""
+                SELECT id, notes FROM customers WHERE id=:id AND company_id=:cid
+            """), {"id":item["customer_id"],"cid":company_id}).mappings().first()
+            import re
+            code_match = re.search(r"کد\s*پاراسای\s*:\s*([0-9۰-۹٠-٩]+)", (matched or {}).get("notes") or "")
+            exact_match = bool(code_match and _normalize_digits(code_match.group(1)) == item["code"])
+            has_entries = conn.execute(text("""
+                SELECT COUNT(*) FROM accounting_entries WHERE company_id=:cid AND customer_id=:id
+            """), {"cid":company_id,"id":item["customer_id"]}).scalar()
+            if not exact_match or has_entries:
+                raise HTTPException(status_code=409, detail="Customer code mapping or opening state has changed; preview again")
+        _ensure_posting_schema(conn)
+        created = datetime(2026, 10, 21, 23, 59, 59)
+        debit_total = credit_total = Decimal("0")
+        for item in rows:
+            amount = Decimal(item["amount"])
+            debit = amount if amount > 0 else Decimal("0")
+            credit = -amount if amount < 0 else Decimal("0")
+            debit_total += debit
+            credit_total += credit
+            _insert_accounting_entry(
+                conn, item["customer_id"], "parasay_opening_14050729",
+                item["customer_id"], "PARASAY opening through 1405/07/29",
+                float(debit), float(credit), created, company_id,
+            )
+            _rebuild_customer_balance(conn, item["customer_id"])
+        if debit_total != Decimal(meta["debit"]) or credit_total != Decimal(meta["credit"]):
+            raise HTTPException(status_code=409, detail="Opening control totals changed")
+        lines = [
+            {"account_code":"1103","debit":float(debit_total),"description":"PARASAY customer receivables opening"},
+            {"account_code":"2101","credit":float(credit_total),"description":"PARASAY customer advances / payables opening"},
+            {"account_code":"3101","credit":float(debit_total-credit_total),"description":"PARASAY opening balance clearing; exclude from any later GL import"},
+        ]
+        try:
+            post_balanced_voucher(
+                "parasay_customer_opening", None,
+                "PARASAY opening customer subledgers through 1405/07/29",
+                lines, company_id, voucher_date="2026-10-21", connection=conn,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error))
+        result = {"inserted":len(rows),"debit":str(debit_total),"credit":str(credit_total),
+                  "net":str(debit_total-credit_total),"company_id":company_id}
+        conn.execute(text("""
+            UPDATE data_import_batches SET status='applied', result_json=:result, applied_at=:now
+            WHERE id=:id AND company_id=:cid
+        """), {"result":json.dumps(result),"now":_now(),"id":batch_id,"cid":company_id})
+        return result

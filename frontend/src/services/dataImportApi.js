@@ -98,3 +98,20 @@ export async function exportImportReportSummaryPdf(batchId, filename) {
   const blob = await requestBlob(`/export/import-report/${batchId}/summary-pdf`, { method: "POST" });
   triggerBlobDownload(blob, filename || "vetrix-import-summary.pdf");
 }
+
+
+// PARASAY existing-customer opening: never uses the normal customers insert path.
+export async function previewExistingCustomerOpening(file) {
+  const body = new FormData();
+  body.append("file", file);
+  const response = await fetch(`${API_URL}/api/data-import/customer-opening/preview`, {
+    method: "POST",
+    headers: getAuthHeaders({}, false),
+    body,
+  });
+  const result = await response.json().catch(() => null);
+  if (!response.ok) throw new Error(result?.detail || "Opening preview failed");
+  return result;
+}
+export const applyExistingCustomerOpening = (batchId) =>
+  jsonRequest(`/customer-opening/apply/${encodeURIComponent(batchId)}?confirm=APPLY_1405_07_29`, { method: "POST" });
