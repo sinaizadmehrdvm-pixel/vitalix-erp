@@ -2034,3 +2034,169 @@ async def apply_parasay_package(request: Request, file: UploadFile = File(...),
     return {"status": "staged", "company_id": company, "summary": summary,
             "no_gl_posting": True, "no_inventory_changes": True,
             "no_customer_balance_changes": True}
+
+
+# Approved source-chart crosswalk. PARASAY Moien code 211130 is duplicated
+# for two different Account IDs; PS-M-<source_id> preserves both identities.
+def _parasay_staged_rows(conn, company, kind, count):
+    rows = conn.execute(text("""
+        SELECT source_id, payload_json FROM parasay_migration_staging
+        WHERE company_id=:company AND kind=:kind
+        ORDER BY CAST(source_id AS INTEGER)
+    """), {"company": company, "kind": kind}).mappings().all()
+    if len(rows) != count:
+        raise HTTPException(409, f"PARASAY {kind}: expected {count} staged records, found {len(rows)}")
+    return [json.loads(r["payload_json"]) for r in rows]
+
+
+def _ensure_parasay_finalize_table(conn):
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS parasay_migration_finalizations (
+            company_id INTEGER NOT NULL,
+            scope TEXT NOT NULL,
+            details_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(company_id,scope)
+        )
+    """))
+
+
+def _parasay_account_type(code):
+    first = str(code or "")[:1]
+    return {"1":"asset","2":"liability","3":"equity",
+            "4":"revenue","5":"expense","6":"expense","9":"equity"}.get(first,"asset")
+
+
+@router.get("/parasay-finalize/preview")
+def preview_parasay_finalization(request: Request):
+    from decimal import Decimal
+    _require_admin(request)
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        _ensure_parasay_stage(conn)
+        _ensure_parasay_finalize_table(conn)
+        totals = _parasay_staged_rows(conn, company, "chart_total", 43)
+        moien = _parasay_staged_rows(conn, company, "chart_moien", 283)
+        goods = _parasay_staged_rows(conn, company, "inventory", 1490)
+        banks = _parasay_staged_rows(conn, company, "banks", 18)
+        residual = _parasay_staged_rows(conn, company, "gl_residual", 283)
+        source_checks = conn.execute(text("""
+            SELECT COUNT(*) FROM parasay_opening_cheques WHERE company_id=:c
+        """), {"c":company}).scalar()
+        prior_opening = conn.execute(text("""
+            SELECT COUNT(*) FROM data_import_batches
+            WHERE company_id=:c AND entity_type='existing_customer_opening'
+              AND status='applied'
+        """), {"c":company}).scalar()
+        done = conn.execute(text("""
+            SELECT scope FROM parasay_migration_finalizations WHERE company_id=:c
+        """), {"c":company}).scalars().all()
+        total_ids = {int(x["ID"]) for x in totals}
+        parent_missing = [x["ID"] for x in moien if int(x["TotalBookID"]) not in total_ids]
+        code_duplicates = len(moien)-len({x["Code"] for x in moien})
+        source_by_code = {x["Code"]: x for x in goods}
+        product_rows = conn.execute(text("""
+            SELECT id, code, stock FROM products WHERE company_id=:c
+        """), {"c":company}).mappings().all()
+        missing_codes = [c for c in source_by_code if c not in {str(p["code"]) for p in product_rows}]
+        qty_changes = [
+            {"source_id": x["ID"], "code":x["Code"],"qty":x["NowAmount"]}
+            for x in goods if Decimal(x["NowAmount"] or "0") < 0
+        ]
+        total_stock = sum((Decimal(x["NowAmount"] or "0") for x in goods),Decimal(0))
+        net_residual = sum((Decimal(x["OtherNetBalance"] or "0") for x in residual),Decimal(0))
+        bank_total = sum((Decimal(x["NetBalance"] or "0") for x in banks),Decimal(0))
+        existing_nonzero_stock = sum(Decimal(str(p["stock"] or 0)) != 0 for p in product_rows)
+        gl_nonzero = sum(Decimal(x["OtherNetBalance"] or "0") != 0 for x in residual)
+        blockers = []
+        if not prior_opening:
+            blockers.append("Customer opening has not been applied")
+        if parent_missing:
+            blockers.append("Unresolved source chart parent IDs")
+        if missing_codes or len(product_rows) != 1490:
+            blockers.append("All 1490 existing VITALIX product codes must match PARASAY")
+        if existing_nonzero_stock:
+            blockers.append("Existing nonzero inventory detected; avoid replacing live stock")
+        if source_checks != 28:
+            blockers.append("28 opening cheques must first be staged")
+        if code_duplicates != 1:
+            blockers.append("Unexpected change to duplicated PARASAY Moien code")
+        if total_stock != Decimal("20020") or net_residual != Decimal("-35779683921"):
+            blockers.append("Source inventory or GL controls changed")
+        if bank_total != Decimal("22036831136") or gl_nonzero != 12:
+            blockers.append("Bank or GL source controls changed")
+        if done:
+            blockers.append("This company already has finalizations: " + ", ".join(done))
+    return {
+        "company_id":company, "source_total_accounts":len(totals),
+        "source_moien_accounts":len(moien), "source_duplicate_moien_codes":code_duplicates,
+        "source_product_count":len(goods), "matched_products":len(goods)-len(missing_codes),
+        "product_total_quantity":str(total_stock), "negative_stock":qty_changes,
+        "bank_accounts":len(banks), "bank_total_irr":str(bank_total),
+        "gl_nonzero_accounts":gl_nonzero, "residual_net_irr":str(net_residual),
+        "cheques_staged":source_checks, "customer_opening_applied":bool(prior_opening),
+        "already_finalized":done, "blockers":blockers,
+        "can_finalize":not blockers,
+        "warning":"Two negative product quantities and PARASAY bank 7579 personal account require explicit manual review. The GL is a snapshot including income/expense through the cutoff."}
+
+
+@router.post("/parasay-finalize/chart")
+def finalize_parasay_chart(request: Request, confirm: str = ""):
+    _require_admin(request)
+    if confirm != "CREATE_PARASAY_CHART_BY_SOURCE_ID":
+        raise HTTPException(400, "Explicit source-ID chart confirmation required")
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        _ensure_parasay_stage(conn)
+        _ensure_parasay_finalize_table(conn)
+        totals = _parasay_staged_rows(conn, company, "chart_total", 43)
+        moien = _parasay_staged_rows(conn, company, "chart_moien", 283)
+        found = conn.execute(text("""
+            SELECT COUNT(*) FROM parasay_migration_finalizations
+            WHERE company_id=:c AND scope='chart'
+        """), {"c":company}).scalar()
+        if found:
+            raise HTTPException(409, "PARASAY source chart already created")
+        _ensure_posting_schema(conn)
+        existing = {row[0] for row in conn.execute(text("""
+            SELECT code FROM chart_accounts WHERE company_id=:c AND
+                (code LIKE 'PS-T-%' OR code LIKE 'PS-M-%')
+        """), {"c":company}).all()}
+        if existing:
+            raise HTTPException(409, "Some PARASAY chart codes already exist; no duplicate inserts")
+        total_ids = {str(row["ID"]) for row in totals}
+        if len(total_ids)!=43 or any(str(row["TotalBookID"]) not in total_ids for row in moien):
+            raise HTTPException(409, "Invalid chart hierarchy")
+        now = _now()
+        total_row_ids = {}
+        for row in totals:
+            result = conn.execute(text("""
+                INSERT INTO chart_accounts
+                (company_id,code,name,account_type,level,normal_balance,description,is_active,created_at,updated_at)
+                VALUES (:c,:code,:name,:type,'ledger',:normal,:desc,1,:now,:now)
+            """), {"c":company,"code":"PS-T-"+str(row["ID"]),
+                   "name":row["Code"]+" | "+row["AccountName"],
+                   "type":_parasay_account_type(row["Code"]),
+                   "normal":"credit" if _parasay_account_type(row["Code"]) in ("liability","equity","revenue") else "debit",
+                   "desc":"PARASAY TotalBook ID="+str(row["ID"])+" original code="+str(row["Code"]),
+                   "now":now})
+            total_row_ids[str(row["ID"])] = result.lastrowid
+        for row in moien:
+            account_type = _parasay_account_type(row["Code"])
+            conn.execute(text("""
+                INSERT INTO chart_accounts
+                (company_id,code,name,account_type,level,parent_id,normal_balance,description,is_active,created_at,updated_at)
+                VALUES (:c,:code,:name,:type,'subsidiary',:parent,:normal,:desc,1,:now,:now)
+            """), {"c":company,"code":"PS-M-"+str(row["ID"]),
+                   "name":str(row["Code"])+" | "+row["AccountName"],
+                   "type":account_type,"parent":total_row_ids[str(row["TotalBookID"])],
+                   "normal":"credit" if account_type in ("liability","equity","revenue") else "debit",
+                   "desc":"PARASAY Moien ID="+str(row["ID"])+" original code="+str(row["Code"]),
+                   "now":now})
+        result={"total":43,"moien":283,"duplicate_source_code_handling":"source ID mapping"}
+        conn.execute(text("""
+            INSERT INTO parasay_migration_finalizations
+            (company_id,scope,details_json,created_at) VALUES (:c,'chart',:data,:now)
+        """),{"c":company,"data":json.dumps(result),"now":now})
+    return {"status":"applied","chart_accounts_created":326,
+            "no_gl_posting":True,"no_customer_balance_changes":True}
