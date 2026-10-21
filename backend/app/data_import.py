@@ -2107,6 +2107,12 @@ def preview_parasay_finalization(request: Request):
         net_residual = sum((Decimal(x["OtherNetBalance"] or "0") for x in residual),Decimal(0))
         bank_total = sum((Decimal(x["NetBalance"] or "0") for x in banks),Decimal(0))
         existing_nonzero_stock = sum(Decimal(str(p["stock"] or 0)) != 0 for p in product_rows)
+        bank_account_table = conn.execute(text("""
+            SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='bank_accounts'
+        """)).scalar()
+        prior_bank_accounts = conn.execute(text("""
+            SELECT COUNT(*) FROM bank_accounts WHERE company_id=:c
+        """),{"c":company}).scalar() if bank_account_table else 0
         gl_nonzero = sum(Decimal(x["OtherNetBalance"] or "0") != 0 for x in residual)
         blockers = []
         if not prior_opening:
@@ -2117,6 +2123,8 @@ def preview_parasay_finalization(request: Request):
             blockers.append("All 1490 existing VITALIX product codes must match PARASAY")
         if existing_nonzero_stock:
             blockers.append("Existing nonzero inventory detected; avoid replacing live stock")
+        if prior_bank_accounts:
+            blockers.append("Existing VITALIX bank accounts detected; reconcile before adding 18 PARASAY bank records")
         if source_checks != 28:
             blockers.append("28 opening cheques must first be staged")
         if code_duplicates != 1:
@@ -2133,6 +2141,7 @@ def preview_parasay_finalization(request: Request):
         "source_product_count":len(goods), "matched_products":len(goods)-len(missing_codes),
         "product_total_quantity":str(total_stock), "negative_stock":qty_changes,
         "bank_accounts":len(banks), "bank_total_irr":str(bank_total),
+        "existing_bank_accounts":prior_bank_accounts,
         "gl_nonzero_accounts":gl_nonzero, "residual_net_irr":str(net_residual),
         "cheques_staged":source_checks, "customer_opening_applied":bool(prior_opening),
         "already_finalized":done, "chart_finalized":"chart" in done,
@@ -2240,6 +2249,13 @@ def finalize_parasay_stock_and_ledger(request: Request,
         banks = _parasay_staged_rows(conn, company, "banks", 18)
         if sum(Decimal(x["NetBalance"]) for x in banks) != Decimal("22036831136"):
             raise HTTPException(409, "Bank total changed")
+        from app.accounting.bank_reconciliation import _ensure_schema as _ensure_bank_schema
+        _ensure_bank_schema(conn)
+        old_bank_accounts=conn.execute(text("""
+            SELECT COUNT(*) FROM bank_accounts WHERE company_id=:c
+        """),{"c":company}).scalar()
+        if old_bank_accounts:
+            raise HTTPException(409, "Existing VITALIX bank accounts require reconciliation")
         amount_by_id = {int(x["MoienID"]): Decimal(x["OtherNetBalance"]) for x in residual}
         nonzero = {key:value for key,value in amount_by_id.items() if value}
         if len(nonzero)!=12 or sum(nonzero.values()) != Decimal("-35779683921"):
@@ -2326,6 +2342,15 @@ def finalize_parasay_stock_and_ledger(request: Request,
             lines, company, voucher_date="2026-10-21", connection=conn,
         )
         now=_now()
+        for bank in banks:
+            conn.execute(text("""
+                INSERT INTO bank_accounts
+                (name,bank_name,account_number,iban,ledger_account_code,
+                 opening_balance,active,created_at,company_id)
+                VALUES (:name,:bank,'','','PS-M-104',:balance,1,:now,:company)
+            """),{"name":"پاراسای | "+bank["BankName"],"bank":bank["BankName"],
+                   "balance":float(Decimal(bank["NetBalance"])),
+                   "now":now,"company":company})
         for good in goods:
             product=by_code[good["Code"]]
             quantity=Decimal(good["NowAmount"] or "0")
@@ -2350,7 +2375,8 @@ def finalize_parasay_stock_and_ledger(request: Request,
                    "now":now})
         result={"voucher_id":voucher_id,"gl_lines":len(lines),
                 "stock_updated":440,"stock_negative":2,
-                "stock_total": "20020", "gl_residual_net":"-35779683921",
+                "stock_total": "20020", "bank_accounts_created":18,
+                "bank_total_irr":"22036831136", "gl_residual_net":"-35779683921",
                 "customer_opening_clearing_debit":"35779683921",
                 "source_cutoff":"1405/07/29"}
         conn.execute(text("""
@@ -2361,4 +2387,4 @@ def finalize_parasay_stock_and_ledger(request: Request,
     return {"status":"applied","company_id":company,**result,
             "customer_opening_untouched":True,
             "cheque_staging_untouched":True,
-            "bank_subaccounts_still_require_mapping":True}
+            "bank_accounts_registered":18,"bank_account_7579_personal_label_reviewed":True}
