@@ -981,3 +981,73 @@ img, svg { max-width: 100%; }
     font-size: clamp(0.72rem, 2.5vw, 0.94rem);
   }
 }
+
+
+/* Products page: responsive to the actual space left after sidebar resizing,
+   not viewport-width breakpoints. Never squeeze financial table columns. */
+.vitalix-products-page {
+  container-type: inline-size;
+  min-width: 0;
+  max-width: 100%;
+}
+.vitalix-products-page > * { min-width: 0; max-width: 100%; }
+.vitalix-products-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.vitalix-products-form-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+.vitalix-products-page :where(.vitalix-products-form-grid > *, .vitalix-products-summary > *) {
+  min-width: 0;
+}
+.vitalix-products-page :where(.overflow-x-auto) {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+.vitalix-products-page .vitalix-products-table {
+  min-width: 1040px;
+  width: 100%;
+  table-layout: auto;
+}
+.vitalix-products-page .vitalix-products-table :where(th, td) {
+  overflow-wrap: normal;
+  word-break: normal;
+  vertical-align: middle;
+}
+.vitalix-products-page .vitalix-products-table :where(th:nth-child(2), td:nth-child(2)) {
+  min-width: 235px;
+  width: 28%;
+}
+.vitalix-products-page .vitalix-products-table :where(th:last-child, td:last-child) {
+  min-width: 150px;
+}
+.vitalix-products-page .vitalix-products-name { min-width: 0; }
+.vitalix-products-page .vitalix-products-name > div:last-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.vitalix-products-page .vitalix-products-table .erp-money {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: nowrap;
+  max-width: none;
+}
+.vitalix-products-filters > * {
+  max-width: 100%;
+  min-width: min(100%, 145px);
+  flex-shrink: 1;
+}
+@container (max-width: 1050px) {
+  .vitalix-products-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .vitalix-products-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container (max-width: 580px) {
+  .vitalix-products-form-grid,
+  .vitalix-products-summary { grid-template-columns: minmax(0, 1fr); }
+  .vitalix-products-page :where(.bg-\\[var\\(--erp-bg-soft\\)\\]) {
+    min-width: 0;
+  }
+  .vitalix-products-filters > * { flex: 1 1 min(100%, 160px); }
+}
