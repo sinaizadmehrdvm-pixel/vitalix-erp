@@ -7,6 +7,7 @@ import { confirmAction } from "../components/ui/confirmService";
 import {
   applyImport, deleteImportBatch, downloadImportTemplate, getImportBatches, previewImport,
   inspectImportFile, getMappingProfiles, saveMappingProfile,
+  previewExistingCustomerOpening, applyExistingCustomerOpening,
 } from "../services/dataImportApi";
 import ProductImportWizard from "./dataImport/ProductImportWizard";
 import JalaliDateField from "../components/forms/JalaliDateField";
@@ -30,6 +31,7 @@ export default function DataImportCenter() {
   const [file, setFile] = useState(null);
   const [openingDate, setOpeningDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [preview, setPreview] = useState(null);
+  const [customerOpeningPreview, setCustomerOpeningPreview] = useState(null);
   const [batches, setBatches] = useState([]);
   const [busy, setBusy] = useState(false);
   const [inspectData, setInspectData] = useState(null);
@@ -161,6 +163,25 @@ export default function DataImportCenter() {
       setProfileName("");
     } catch (error) { toast.error(error.message); }
   }
+  async function runCustomerOpeningPreview() {
+    if (!file) return toast.error("فایل اصلی CSV مانده‌های پاراسای را انتخاب کنید");
+    setBusy(true);
+    try { setCustomerOpeningPreview(await previewExistingCustomerOpening(file)); }
+    catch (error) { toast.error(error.message); }
+    finally { setBusy(false); }
+  }
+  async function runCustomerOpeningApply() {
+    if (!customerOpeningPreview?.can_apply || busy) return;
+    const approved = await confirmAction("آیا از ثبت قطعی ۹۸ مانده مشتریان شرکت فعال تا ۱۴۰۵/۰۷/۲۹ مطمئن هستید؟ این عملیات سند حسابداری و ریزحساب ایجاد می‌کند و قابل اجرای مجدد نیست.", { danger: true });
+    if (!approved) return;
+    setBusy(true);
+    try {
+      const result = await applyExistingCustomerOpening(customerOpeningPreview.batch_id);
+      toast.success(`${result.inserted} مانده افتتاحیه ثبت شد`);
+      setCustomerOpeningPreview(null); setFile(null); await load();
+    } catch (error) { toast.error(error.message); }
+    finally { setBusy(false); }
+  }
   async function runPreview() {
     if (!file) return toast.error(t.choose);
     setBusy(true);
@@ -191,11 +212,12 @@ export default function DataImportCenter() {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 10 }}>
         <Select
           value={entity}
-          onChange={value => { setEntity(value); setPreview(null); setFile(null); setInspectData(null); setMappingOverride({}); setSelectedProfileId(""); }}
+          onChange={value => { setEntity(value); setPreview(null); setCustomerOpeningPreview(null); setFile(null); setInspectData(null); setMappingOverride({}); setSelectedProfileId(""); }}
           options={[
             { value: "customers", label: t.customers },
             { value: "products", label: t.products },
             { value: "gl_trial_balance", label: t.gl_trial_balance },
+            { value: "existing_customer_opening", label: "مانده افتتاحیه طرف‌حساب‌های موجود (پاراسای)" },
             { value: "invoices", label: t.invoices },
             { value: "employees", label: t.employees },
           ]}
@@ -204,7 +226,41 @@ export default function DataImportCenter() {
       <p style={{ color: "var(--erp-muted)", fontSize: 13, marginBottom: 0 }}>{t.order}</p>
     </section>
 
-    {entity === "products" ? (
+    {entity === "existing_customer_opening" ? (
+      <section style={{ ...card, padding: 18, marginBottom: 14 }}>
+        <h2 style={{ marginTop: 0, fontSize: 18 }}>انتقال مانده ۹۸ طرف‌حساب موجود ـ پاراسای</h2>
+        <p style={{ color: "var(--erp-muted)", lineHeight: 1.8 }}>
+          تاریخ مبنا: ۱۴۰۵/۰۷/۲۹ (۲۰۲۶/۱۰/۲۱). فقط فایل اصلی PARASAY_400_Customer_Balances.csv را انتخاب کنید.
+          مشتری جدید ساخته نمی‌شود؛ تطبیق فقط با «کد پاراسای» ثبت‌شده در یادداشت مشتریان شرکت فعال است.
+        </p>
+        <label style={{ display: "block", padding: 14, border: "1px dashed var(--erp-accent)", borderRadius: 12, cursor: "pointer" }}>
+          <Upload size={16} style={{ display: "inline", marginInlineEnd: 8 }}/>
+          {file?.name || "انتخاب فایل CSV اصلی مانده‌های ۴۰۰ مشتری"}
+          <input hidden type="file" accept=".csv" onChange={e => {setFile(e.target.files?.[0] || null);setCustomerOpeningPreview(null);}}/>
+        </label>
+        <button onClick={runCustomerOpeningPreview} disabled={!file || busy}
+          style={{ marginTop: 12, padding: "11px 17px", border: 0, borderRadius: 12, background: "var(--erp-accent)", color: "#071028", opacity: !file || busy ? .5 : 1 }}>
+          {busy ? "در حال کنترل..." : "بررسی و تطبیق بدون ثبت"}
+        </button>
+        {customerOpeningPreview && (
+          <div style={{ marginTop: 16, padding: 14, borderRadius: 12, background: "var(--erp-bg)" }}>
+            <p>شناسه شرکت فعال: <strong>{customerOpeningPreview.company_id}</strong></p>
+            <p>تطبیق مشتریان: <strong>{customerOpeningPreview.matched_customers} از ۴۰۰</strong> — مانده غیرصفر: <strong>{customerOpeningPreview.nonzero_customers} از ۹۸</strong></p>
+            <p>جمع بدهکار: <strong>{customerOpeningPreview.debit} ریال</strong></p>
+            <p>جمع بستانکار: <strong>{customerOpeningPreview.credit} ریال</strong></p>
+            <p>خالص: <strong>{customerOpeningPreview.net} ریال</strong></p>
+            <p style={{ color: customerOpeningPreview.can_apply ? "#4ade80" : "#f87171", fontWeight: 800 }}>
+              {customerOpeningPreview.can_apply ? "تمام کنترل‌ها گذرانده شد؛ قبل از تأیید، از دیتابیس پشتیبان بگیرید." : "ثبت مسدود است؛ موارد زیر باید رفع شوند."}
+            </p>
+            {(customerOpeningPreview.issues || []).map((issue,i)=><p key={i} style={{color:"#f87171"}}>{issue}</p>)}
+            <button disabled={!customerOpeningPreview.can_apply || busy} onClick={runCustomerOpeningApply}
+              style={{ padding: "11px 17px", border: 0, borderRadius: 12, background: "var(--erp-success-solid)", color: "var(--erp-success-solid-text)", opacity: !customerOpeningPreview.can_apply || busy ? .5 : 1 }}>
+              تأیید و ثبت قطعی افتتاحیه در شرکت فعال
+            </button>
+          </div>
+        )}
+      </section>
+    ) : entity === "products" ? (
       <section style={{ marginBottom: 14 }}>
         <ProductImportWizard />
       </section>
