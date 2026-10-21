@@ -1641,6 +1641,7 @@ async def preview_existing_customer_opening(
             "debit":str(debit_total),"credit":str(credit_total),
             "net":str(debit_total-credit_total),
             "issues":issues,"can_apply":not issues,
+            "balances":[{"code":x["code"],"name":x["name"],"amount":x["amount"]} for x in nonzero],
             "instruction":"Do not apply until the company and all 98 balances have been reviewed."}
 
 
