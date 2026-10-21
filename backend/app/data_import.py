@@ -1586,7 +1586,7 @@ async def preview_existing_customer_opening(
             match = re.search(r"کد\s*پاراسای\s*:\s*([0-9۰-۹٠-٩]+)", cust["notes"] or "")
             if not match:
                 continue
-            code = _to_ascii_digits(match.group(1))
+            code = _normalize_digits(match.group(1))
             if code in by_code:
                 ambiguous.add(code)
             by_code[code] = {"id": cust["id"], "name": cust["name"]}
