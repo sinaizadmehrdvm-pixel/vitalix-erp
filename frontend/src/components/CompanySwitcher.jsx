@@ -21,7 +21,16 @@ export default function CompanySwitcher() {
 
   useEffect(() => {
     if (!user?.is_super_admin) return;
-    getCompanies().then(setCompanies).catch(() => {});
+    let mounted = true;
+    const refreshCompanies = () => {
+      getCompanies().then((items) => { if (mounted) setCompanies(items); }).catch(() => {});
+    };
+    refreshCompanies();
+    window.addEventListener("vitalix:companies-updated", refreshCompanies);
+    return () => {
+      mounted = false;
+      window.removeEventListener("vitalix:companies-updated", refreshCompanies);
+    };
   }, [user?.is_super_admin]);
 
   if (!user?.is_super_admin) return null;
