@@ -1009,20 +1009,20 @@ img, svg { max-width: 100%; }
   font-variant-numeric: tabular-nums;
 }
 @container erp-workspace (max-width: 1050px) {
-  .erp-main :where(.grid.grid-cols-4, .grid.md\\:grid-cols-4, .grid.xl\\:grid-cols-4, .grid.lg\\:grid-cols-4) {
+  :where(.grid.grid-cols-4, .grid.md\\:grid-cols-4, .grid.xl\\:grid-cols-4, .grid.lg\\:grid-cols-4) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 @container erp-workspace (max-width: 760px) {
-  .erp-main :where(.grid.md\\:grid-cols-3, .grid.lg\\:grid-cols-3, .grid.xl\\:grid-cols-3, .grid.grid-cols-3) {
+  :where(.grid.md\\:grid-cols-3, .grid.lg\\:grid-cols-3, .grid.xl\\:grid-cols-3, .grid.grid-cols-3) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-  .erp-main :where(.grid.md\\:grid-cols-2, .grid.lg\\:grid-cols-2, .grid.xl\\:grid-cols-2) {
+  :where(.grid.md\\:grid-cols-2, .grid.lg\\:grid-cols-2, .grid.xl\\:grid-cols-2) {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 @container erp-workspace (max-width: 520px) {
-  .erp-main :where(.grid.grid-cols-4, .grid.grid-cols-3, .grid.md\\:grid-cols-3, .grid.lg\\:grid-cols-3, .grid.xl\\:grid-cols-3, .grid.md\\:grid-cols-4, .grid.lg\\:grid-cols-4, .grid.xl\\:grid-cols-4) {
+  :where(.grid.grid-cols-4, .grid.grid-cols-3, .grid.md\\:grid-cols-3, .grid.lg\\:grid-cols-3, .grid.xl\\:grid-cols-3, .grid.md\\:grid-cols-4, .grid.lg\\:grid-cols-4, .grid.xl\\:grid-cols-4) {
     grid-template-columns: minmax(0, 1fr);
   }
 }
