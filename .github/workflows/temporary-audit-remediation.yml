@@ -22,7 +22,7 @@ jobs:
         working-directory: frontend
         run: |
           npm ci
-          npm audit fix
+          npm update
           npm audit --audit-level=high
           npm run audit:fetch
           npm run audit:routes
