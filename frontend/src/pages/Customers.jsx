@@ -1768,6 +1768,43 @@ function EmptyState({ message }) {
   return <div className="text-[var(--erp-muted)] col-span-full text-center py-6">{message}</div>;
 }
 
+function AutoFitSummaryMoney({ value, color }) {
+  const { money } = useLanguage();
+  const wrapperRef = useRef(null);
+  const textRef = useRef(null);
+  const formatted = money(Number(value || 0));
+
+  useEffect(() => {
+    const wrapper = wrapperRef.current;
+    const text = textRef.current;
+    if (!wrapper || !text) return undefined;
+
+    const fit = () => {
+      // Measure the actual rendered, localized amount at its preferred size.
+      // Do not abbreviate, round or truncate the number to fit.
+      text.style.fontSize = "26px";
+      const available = wrapper.clientWidth;
+      const required = text.scrollWidth;
+      if (!available || !required) return;
+      const next = Math.max(10, Math.min(26, Math.floor(26 * available / (required + 2))));
+      text.style.fontSize = next + "px";
+    };
+
+    const observer = new ResizeObserver(fit);
+    observer.observe(wrapper);
+    fit();
+    return () => observer.disconnect();
+  }, [formatted]);
+
+  return (
+    <span ref={wrapperRef} style={{ display: "block", width: "100%", minWidth: 0, overflow: "hidden" }} title={formatted} aria-label={formatted}>
+      <span ref={textRef} style={{ display: "inline-block", width: "max-content", maxWidth: "none", whiteSpace: "nowrap", fontSize: 26, fontWeight: 900, lineHeight: 1.4, fontVariantNumeric: "tabular-nums", color }}>
+        {formatted}
+      </span>
+    </span>
+  );
+}
+
 function SummaryCard({ icon, title, value, suffix, color, colorClassName, isCount, onClick, active, ariaLabel }) {
   return (
     <div
@@ -1788,7 +1825,7 @@ function SummaryCard({ icon, title, value, suffix, color, colorClassName, isCoun
       }}
     >
       <div className="flex justify-between items-center gap-3 flex-wrap">
-        <div>
+        <div style={{ flex: "1 1 0", minWidth: 0 }}>
           <div className="text-[var(--erp-muted)] text-sm font-bold">{title}</div>
           <div className={`mt-3 font-black${colorClassName ? ` ${colorClassName}` : ""}`}>
             {isCount ? (
@@ -1796,8 +1833,8 @@ function SummaryCard({ icon, title, value, suffix, color, colorClassName, isCoun
                 <NumberOnly value={value} />
               </span>
             ) : (
-              <span className="flex flex-wrap items-baseline gap-1">
-                <MoneyDisplay value={value} style={colorClassName ? undefined : { color }} />
+              <span style={{ display: "block", minWidth: 0, width: "100%" }}>
+                <AutoFitSummaryMoney value={value} color={color} />
                 {suffix && <span className="text-xs font-normal" style={{ color: "var(--erp-muted)" }}>{suffix}</span>}
               </span>
             )}
