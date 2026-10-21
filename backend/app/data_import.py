@@ -1204,11 +1204,11 @@ def apply_import(batch_id: str, request: Request):
                       (name, phone, email, address, city, national_id, economic_code,
                        contact_person, customer_type, opening_balance, credit_limit, notes, created_at,
                        portal_access_enabled, portal_token_generation, pricing_group,
-                       supplier_portal_access_enabled, supplier_portal_token_generation, company_id)
+                       supplier_portal_access_enabled, supplier_portal_token_generation, marketing_consent, company_id)
                     VALUES
                       (:name, :phone, :email, :address, :city, :national_id, :economic_code,
                        :contact_person, :customer_type, :opening_balance, :credit_limit, :notes, :created_at,
-                       0, 0, 'retail', 0, 0, :company_id)
+                       0, 0, 'retail', 0, 0, 0, :company_id)
                 """), {**item, "created_at": datetime.utcnow(), "company_id": company_id})
                 _post_customer_opening(conn, result.lastrowid, item["name"], item["opening_balance"], policy, company_id)
                 existing.add(_row_key(entity, item))
