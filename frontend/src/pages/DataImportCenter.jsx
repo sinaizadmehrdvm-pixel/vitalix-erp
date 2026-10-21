@@ -253,6 +253,14 @@ export default function DataImportCenter() {
               {customerOpeningPreview.can_apply ? "تمام کنترل‌ها گذرانده شد؛ قبل از تأیید، از دیتابیس پشتیبان بگیرید." : "ثبت مسدود است؛ موارد زیر باید رفع شوند."}
             </p>
             {(customerOpeningPreview.issues || []).map((issue,i)=><p key={i} style={{color:"#f87171"}}>{issue}</p>)}
+            <div style={{ maxHeight: 320, overflow: "auto", marginTop: 12, border: "1px solid var(--erp-border)", borderRadius: 10 }}>
+              <table className="erp-data-table" style={{ width: "100%" }}>
+                <thead><tr><th>کد پاراسای</th><th>طرف حساب در VITALIX</th><th>مانده امضادار (ریال)</th></tr></thead>
+                <tbody>{(customerOpeningPreview.balances || []).map((row) =>
+                  <tr key={row.code}><td>{row.code}</td><td>{row.name}</td><td>{row.amount}</td></tr>
+                )}</tbody>
+              </table>
+            </div>
             <button disabled={!customerOpeningPreview.can_apply || busy} onClick={runCustomerOpeningApply}
               style={{ padding: "11px 17px", border: 0, borderRadius: 12, background: "var(--erp-success-solid)", color: "var(--erp-success-solid-text)", opacity: !customerOpeningPreview.can_apply || busy ? .5 : 1 }}>
               تأیید و ثبت قطعی افتتاحیه در شرکت فعال
