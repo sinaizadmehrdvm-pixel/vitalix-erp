@@ -1842,7 +1842,6 @@ function SummaryCard({ icon, title, value, suffix, color, colorClassName, isCoun
           </span>
         )}
       </div>
-div>
     </div>
   );
 }
