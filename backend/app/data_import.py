@@ -1732,3 +1732,159 @@ def apply_existing_customer_opening(batch_id: str, request: Request, confirm: st
             WHERE id=:id AND company_id=:cid
         """), {"result":json.dumps(result),"now":_now(),"id":batch_id,"cid":company_id})
         return result
+
+
+# PARASAY migration workbench: immutable, source-id-keyed raw staging.
+# Deliberately does NOT issue vouchers, update stock, or create bank accounts.
+# The original ledger contains period P&L and an existing VITALIX customer
+# opening clearing voucher; importing any of those as GL a second time would
+# double post. Keep source snapshots inspectable pending an approved crosswalk.
+_PARASAY_STAGE_DEFS = {
+    "inventory": {"required": ("ID", "Code", "Name", "NowAmount"),
+                  "expected": 1490},
+    "banks": {"required": ("BankAccountID", "BankName", "NetBalance"),
+              "expected": 18},
+    "gl_residual": {"required": ("MoienID", "MoienCode", "MoienName", "OtherNetBalance"),
+                    "expected": 283},
+}
+
+
+def _parasay_stage_validate(kind, raw):
+    import csv
+    from decimal import Decimal, InvalidOperation
+    if kind not in _PARASAY_STAGE_DEFS:
+        raise HTTPException(404, "Unknown PARASAY source category")
+    try:
+        decoded = raw.decode("utf-8-sig")
+        lines = csv.DictReader(io.StringIO(decoded), delimiter="؛")
+        header = lines.fieldnames or []
+        required = _PARASAY_STAGE_DEFS[kind]["required"]
+        if not all(col in header for col in required):
+            raise ValueError("Missing original PARASAY columns: " + ", ".join(set(required)-set(header)))
+        rows = list(lines)
+        if len(rows) != _PARASAY_STAGE_DEFS[kind]["expected"]:
+            raise ValueError("Unexpected original PARASAY row count")
+        identifiers = []
+        nonzero = 0
+        total = Decimal(0)
+        negative_stock = 0
+        for row in rows:
+            identifier = row["ID"] if kind == "inventory" else (
+                row["BankAccountID"] if kind == "banks" else row["MoienID"])
+            if not identifier or not str(identifier).isdigit():
+                raise ValueError("Missing or nonnumeric original identifier")
+            identifiers.append(identifier)
+            value_key = ("NowAmount" if kind == "inventory"
+                         else "NetBalance" if kind == "banks" else "OtherNetBalance")
+            value = Decimal(row.get(value_key) or "0")
+            if not value.is_finite():
+                raise ValueError("Non-finite amount or quantity")
+            total += value
+            nonzero += value != 0
+            if kind == "inventory":
+                negative_stock += value < 0
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("Duplicate source IDs")
+        expected_nonzero = {"inventory": 440, "banks": 18, "gl_residual": 12}
+        if nonzero != expected_nonzero[kind]:
+            raise ValueError("Control number of nonzero source rows did not match")
+        control_totals = {"inventory": Decimal("20020"),
+                          "banks": Decimal("22036831136"),
+                          "gl_residual": Decimal("-35779683921")}
+        if total != control_totals[kind]:
+            raise ValueError("Source totals did not reconcile")
+        return rows, {"count": len(rows), "nonzero": nonzero, "source_total": str(total),
+                      "negative_stock_count": negative_stock,
+                      "is_accounting_posted": False}
+    except (UnicodeError, ValueError, InvalidOperation, csv.Error) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+def _ensure_parasay_stage(conn):
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS parasay_migration_staging (
+            company_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(company_id, kind, source_id)
+        )
+    """))
+
+
+def _parasay_company(conn, request):
+    company_id = current_company_id(request)
+    company = conn.execute(text(
+        "SELECT name FROM companies WHERE id=:company AND is_active=1"
+    ), {"company": company_id}).mappings().first()
+    if not company or "هایپر" not in (company["name"] or ""):
+        raise HTTPException(403, "PARASAY migration is Hyper Doctor only")
+    return company_id
+
+
+@router.post("/parasay-stage/{kind}/preview")
+async def preview_parasay_source(kind: str, request: Request, file: UploadFile = File(...)):
+    _require_admin(request)
+    raw = await file.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(413, "File too large")
+    rows, summary = _parasay_stage_validate(kind, raw)
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        _ensure_parasay_stage(conn)
+        current = conn.execute(text("""
+            SELECT COUNT(*) FROM parasay_migration_staging
+            WHERE company_id=:company AND kind=:kind
+        """), {"company": company, "kind": kind}).scalar()
+    return {"kind": kind, "company_id": company, **summary,
+            "existing_staged": current, "can_apply": current == 0,
+            "warning": "Review only. No accounting or inventory movements are posted."}
+
+
+@router.post("/parasay-stage/{kind}/apply")
+async def apply_parasay_source(kind: str, request: Request, file: UploadFile = File(...),
+                              confirm: str = ""):
+    _require_admin(request)
+    if confirm != "STAGE_WITHOUT_POSTING":
+        raise HTTPException(400, "Staging-only confirmation required")
+    raw = await file.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(413, "File too large")
+    rows, summary = _parasay_stage_validate(kind, raw)
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        _ensure_parasay_stage(conn)
+        existing = conn.execute(text("""
+            SELECT COUNT(*) FROM parasay_migration_staging
+            WHERE company_id=:company AND kind=:kind
+        """), {"company": company, "kind": kind}).scalar()
+        if existing:
+            raise HTTPException(409, "PARASAY source was already staged. No duplicate import.")
+        id_name = {"inventory": "ID", "banks": "BankAccountID", "gl_residual": "MoienID"}[kind]
+        now = _now()
+        for row in rows:
+            conn.execute(text("""
+                INSERT INTO parasay_migration_staging
+                   (company_id,kind,source_id,payload_json,created_at)
+                VALUES (:company,:kind,:source_id,:payload,:created)
+            """), {"company": company, "kind": kind, "source_id": row[id_name],
+                   "payload": json.dumps(row, ensure_ascii=False), "created": now})
+    return {"status": "staged", "kind": kind, **summary,
+            "no_gl_posting": True, "no_stock_posting": True}
+
+
+@router.get("/parasay-stage/status")
+def parasay_staging_status(request: Request):
+    _require_admin(request)
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        _ensure_parasay_stage(conn)
+        counts = conn.execute(text("""
+            SELECT kind, COUNT(*) AS staged_count FROM parasay_migration_staging
+            WHERE company_id=:company GROUP BY kind
+        """), {"company": company}).mappings().all()
+    return {"company_id": company,
+            "staged_counts": {r["kind"]: r["staged_count"] for r in counts},
+            "financial_posting_performed": False,
+            "warning": "Only source snapshots staged. GL/stock movements require reconciled crosswalk."}
