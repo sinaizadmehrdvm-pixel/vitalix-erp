@@ -34,6 +34,9 @@ export default function DataImportCenter() {
   const [parasayPreviews, setParasayPreviews] = useState({});
   const [parasayStaged, setParasayStaged] = useState({});
   const [parasayBusy, setParasayBusy] = useState(false);
+  const [parasayPackage, setParasayPackage] = useState(null);
+  const [parasayPackagePreview, setParasayPackagePreview] = useState(null);
+  const [parasayPackageApplied, setParasayPackageApplied] = useState(false);
   const [openingDate, setOpeningDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [preview, setPreview] = useState(null);
   const [customerOpeningPreview, setCustomerOpeningPreview] = useState(null);
@@ -207,6 +210,25 @@ export default function DataImportCenter() {
     } catch (error) { toast.error(error.message); }
     finally { setBusy(false); }
   }
+  async function parasayPackageAction(action) {
+    if (!parasayPackage) return toast.error("ابتدا بسته ZIP را انتخاب کنید");
+    if (action === "apply") {
+      if (!parasayPackagePreview?.can_apply) return;
+      if (!window.confirm("چهار منبع پاراسای با هم ذخیره می‌شوند؛ هیچ سند مالی، موجودی کالا یا مانده مشتری تغییر نمی‌کند. تأیید؟")) return;
+    }
+    setParasayBusy(true);
+    try {
+      const fd = new FormData(); fd.append("file", parasayPackage);
+      const headers = getAuthHeaders();delete headers["Content-Type"];delete headers["content-type"];
+      const endpoint = `${API_URL}/api/data-import/parasay-package/${action}${action === "apply"?"?confirm=STAGE_FOUR_SOURCES_NO_FINANCIAL_CHANGES":""}`;
+      const response = await fetch(endpoint,{method:"POST",headers,body:fd});
+      const result = await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(typeof result.detail==="string"?result.detail:"خطا در کنترل بسته مهاجرت");
+      if(action==="preview"){setParasayPackagePreview(result);toast.success("تمام چهار فایل کنترل شدند");}
+      else{setParasayPackageApplied(true);setParasayPackagePreview(x=>({...x,can_apply:false}));toast.success("تمام چهار دسته بدون ثبت مالی ذخیره شدند");}
+    } catch(error){toast.error(error.message);}
+    finally{setParasayBusy(false);}
+  }
   async function stageParasayRequest(kind, action, fileToSend) {
     const form = new FormData();
     if (fileToSend) form.append("file", fileToSend);
@@ -270,6 +292,24 @@ export default function DataImportCenter() {
     <section style={{ ...card, padding: 18, marginBottom: 14 }}>
       <h2 style={{ marginTop: 0, fontSize: 19 }}>مرکز انتقال باقی‌مانده پاراسای — هایپر دکتر</h2>
       <p style={{ color: "var(--erp-muted)" }}>سه فایل اصلی قبلاً استخراج شده‌اند. ابتدا با کنترل جمع و تعداد خوانده و در جدول مستقل ذخیره می‌شوند؛ بدون افزایش موجودی، تغییر مانده مشتریان یا صدور سند جدید. ورود عملیاتی پس از تطبیق انبار، حساب‌ها و ۳۱۰۱ انجام می‌شود.</p>
+      <div style={{ padding: 13, borderRadius: 14, border: "1px solid var(--erp-accent)", marginBottom: 15 }}>
+        <h3 style={{ margin: "0 0 8px" }}>بارگذاری یکجای بسته کامل ZIP پاراسای</h3>
+        <p style={{ color: "var(--erp-muted)", fontSize: 13 }}>چهار مجموعه: ۱۴۹۰ کالا، ۱۸ بانک، ۲۸۳ معین و ۲۸ چک. این مرحله فقط اطلاعات اولیه را ذخیره می‌کند؛ موجودی و حسابداری تغییر نمی‌کند.</p>
+        <input type="file" accept=".zip,application/zip" onChange={e=>{setParasayPackage(e.target.files?.[0]||null);setParasayPackagePreview(null);setParasayPackageApplied(false);}} style={{ maxWidth:"100%" }} />
+        <div style={{ display:"flex",flexWrap:"wrap",gap:8,marginTop:10 }}>
+          <button type="button" disabled={!parasayPackage||parasayBusy} onClick={()=>parasayPackageAction("preview")} style={{padding:"9px 13px",borderRadius:10,fontWeight:700}}>بررسی چهار فایل بدون ثبت</button>
+          <button type="button" disabled={!parasayPackagePreview?.can_apply||parasayBusy||parasayPackageApplied} onClick={()=>parasayPackageAction("apply")} style={{padding:"9px 13px",borderRadius:10,fontWeight:700}}>ذخیره یکجای داده‌های مبدأ (بدون گردش مالی)</button>
+        </div>
+        {parasayPackagePreview&&<p style={{marginTop:10,fontSize:13}}>
+          شرکت: {pd(parasayPackagePreview.company_id)} | کالا: {pd(parasayPackagePreview.summary.inventory.count)} |
+          بانک: {pd(parasayPackagePreview.summary.banks.count)} |
+          معین: {pd(parasayPackagePreview.summary.gl_residual.count)} |
+          چک: {pd(parasayPackagePreview.summary.cheques.count)} |
+          چک بی‌طرف‌حساب: {pd(parasayPackagePreview.summary.cheques.unknown_party)}
+          {!parasayPackagePreview.can_apply&&" | این بسته یا بخشی از آن قبلاً ذخیره شده؛ ثبت مجدد مسدود است."}
+        </p>}
+        {parasayPackageApplied&&<p style={{color:"var(--erp-success)"}}>چهار منبع در شرکت هایپر دکتر ذخیره شدند؛ ثبت حسابداری و موجودی صفر است.</p>}
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(265px,1fr))", gap: 12 }}>
         {[
           {kind: "inventory", title: "موجودی ۱٬۴۹۰ کالا / ۴۴۰ دارای موجودی", file: "PARASAY7_ALL_GOODS.csv"},
