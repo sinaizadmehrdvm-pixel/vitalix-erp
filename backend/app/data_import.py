@@ -1574,6 +1574,10 @@ async def preview_existing_customer_opening(
         issues.append("Source control totals or unique customer count do not match verified PARASAY snapshot")
     with engine.begin() as conn:
         _ensure_schema(conn)
+        company = conn.execute(text("SELECT name, is_active FROM companies WHERE id=:cid"),
+                               {"cid": company_id}).mappings().first()
+        if not company or not company["is_active"] or "هایپر" not in (company["name"] or ""):
+            raise HTTPException(status_code=403, detail="PARASAY opening is restricted to active Hyper Doctor company")
         # Company selection is taken solely from authenticated request context,
         # not a company name supplied in an uploaded file.
         customer_rows = conn.execute(text("""
@@ -1654,6 +1658,10 @@ def apply_existing_customer_opening(batch_id: str, request: Request, confirm: st
         raise HTTPException(status_code=400, detail="Explicit cutoff confirmation required")
     with engine.begin() as conn:
         _ensure_schema(conn)
+        company = conn.execute(text("SELECT name, is_active FROM companies WHERE id=:cid"),
+                               {"cid": company_id}).mappings().first()
+        if not company or not company["is_active"] or "هایپر" not in (company["name"] or ""):
+            raise HTTPException(status_code=403, detail="PARASAY opening is restricted to active Hyper Doctor company")
         batch = conn.execute(text("""
             SELECT * FROM data_import_batches WHERE id=:id AND company_id=:company_id
               AND entity_type='existing_customer_opening'
