@@ -113,3 +113,61 @@ def test_parasay_preview_rejects_duplicate_code(preview_database):
     report = _preview(("\n".join(lines) + "\n").encode("utf-8-sig"))
     assert report["can_apply"] is False
     assert any("duplicate PARASAY customer code" in issue for issue in report["issues"])
+
+
+def test_parasay_apply_is_atomic_and_idempotent(preview_database, monkeypatch):
+    """Mock posting primitives, but exercise real batch state and SQL guards."""
+    preview = _preview(_csv())
+    posted = []
+
+    monkeypatch.setattr(importer, "financial_policy_values", lambda conn, cid: {})
+    monkeypatch.setattr(importer, "_ensure_posting_schema", lambda conn: None)
+    monkeypatch.setattr(importer, "_rebuild_customer_balance", lambda conn, cid: None)
+
+    def insert_entry(conn, customer_id, source_type, source_id, description,
+                     debit, credit, created_at, company_id):
+        conn.execute(text("""
+            INSERT INTO accounting_entries (customer_id, company_id)
+            VALUES (:customer, :company)
+        """), {"customer": customer_id, "company": company_id})
+
+    def post_voucher(source_type, source_id, description, lines, company_id, **kwargs):
+        assert company_id == 1
+        debit = sum(x.get("debit", 0) for x in lines)
+        credit = sum(x.get("credit", 0) for x in lines)
+        assert debit == credit
+        posted.append((source_type, lines))
+
+    monkeypatch.setattr(importer, "_insert_accounting_entry", insert_entry)
+    monkeypatch.setattr(importer, "post_balanced_voucher", post_voucher)
+
+    result = importer.apply_existing_customer_opening(
+        preview["batch_id"], _request(1), confirm="APPLY_1405_07_29"
+    )
+    assert result["inserted"] == 98
+    assert result["net"] == "35779683921.00"
+    assert len(posted) == 1
+    assert posted[0][0] == "parasay_customer_opening"
+    with preview_database.begin() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM accounting_entries WHERE company_id=1")).scalar() == 98
+        assert conn.execute(text("SELECT COUNT(*) FROM accounting_entries WHERE company_id=2")).scalar() == 0
+    with pytest.raises(HTTPException) as error:
+        importer.apply_existing_customer_opening(
+            preview["batch_id"], _request(1), confirm="APPLY_1405_07_29"
+        )
+    assert error.value.status_code == 409
+    assert len(posted) == 1
+
+
+def test_parasay_apply_rechecks_customer_activity(preview_database, monkeypatch):
+    report = _preview(_csv())
+    with preview_database.begin() as conn:
+        conn.execute(text("INSERT INTO accounting_entries (customer_id, company_id) VALUES (1, 1)"))
+    monkeypatch.setattr(importer, "financial_policy_values", lambda conn, cid: {})
+    with pytest.raises(HTTPException) as error:
+        importer.apply_existing_customer_opening(
+            report["batch_id"], _request(1), confirm="APPLY_1405_07_29"
+        )
+    assert error.value.status_code == 409
+    with preview_database.begin() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM accounting_entries")).scalar() == 1
