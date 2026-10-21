@@ -2200,3 +2200,164 @@ def finalize_parasay_chart(request: Request, confirm: str = ""):
         """),{"c":company,"data":json.dumps(result),"now":now})
     return {"status":"applied","chart_accounts_created":326,
             "no_gl_posting":True,"no_customer_balance_changes":True}
+
+
+@router.post("/parasay-finalize/opening")
+def finalize_parasay_stock_and_ledger(request: Request,
+                                      confirm: str = "",
+                                      accept_source_negative_stock: bool = False,
+                                      acknowledge_bank_7579: bool = False):
+    """Atomic PARASAY stock snapshot + source residual GL.
+    The prior customer-opening voucher's 3101 clearing credit is reversed
+    by a 3101 debit in THIS voucher; no customer subledger is touched.
+    All operational stock and ledger writes roll back on any failure.
+    """
+    from decimal import Decimal
+    _require_admin(request)
+    if confirm != "APPLY_PARASAY_STOCK_GL_14050729":
+        raise HTTPException(400, "Explicit company/date confirmation required")
+    if not accept_source_negative_stock or not acknowledge_bank_7579:
+        raise HTTPException(409, "Review both negative stock items and the personal bank account 7579 first")
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        _ensure_parasay_stage(conn)
+        _ensure_parasay_finalize_table(conn)
+        found = conn.execute(text("""
+            SELECT COUNT(*) FROM parasay_migration_finalizations
+            WHERE company_id=:c AND scope='opening'
+        """),{"c":company}).scalar()
+        if found:
+            raise HTTPException(409, "Opening snapshot has already been posted")
+        chart_done = conn.execute(text("""
+            SELECT COUNT(*) FROM parasay_migration_finalizations
+            WHERE company_id=:c AND scope='chart'
+        """),{"c":company}).scalar()
+        if not chart_done:
+            raise HTTPException(409, "PARASAY source chart must be finalized first")
+        goods = _parasay_staged_rows(conn, company, "inventory", 1490)
+        residual = _parasay_staged_rows(conn, company, "gl_residual", 283)
+        banks = _parasay_staged_rows(conn, company, "banks", 18)
+        if sum(Decimal(x["NetBalance"]) for x in banks) != Decimal("22036831136"):
+            raise HTTPException(409, "Bank total changed")
+        amount_by_id = {int(x["MoienID"]): Decimal(x["OtherNetBalance"]) for x in residual}
+        nonzero = {key:value for key,value in amount_by_id.items() if value}
+        if len(nonzero)!=12 or sum(nonzero.values()) != Decimal("-35779683921"):
+            raise HTTPException(409, "Unreconciled PARASAY residual GL; cannot post")
+        if amount_by_id.get(104) != Decimal("22036831136"):
+            raise HTTPException(409, "PARASAY bank Moien does not match bank account detail")
+        if amount_by_id.get(117) != Decimal("3509040000") or amount_by_id.get(193) != Decimal("-26415000000"):
+            raise HTTPException(409, "PARASAY cheque GL does not match 28 cheque detail rows")
+        prior = conn.execute(text("""
+            SELECT COUNT(*) FROM data_import_batches
+            WHERE company_id=:c AND entity_type='existing_customer_opening' AND status='applied'
+        """),{"c":company}).scalar()
+        if prior != 1:
+            raise HTTPException(409, "Expected one applied prior customer-opening batch")
+        _ensure_posting_schema(conn)
+        clearing = conn.execute(text("""
+            SELECT COALESCE(SUM(l.credit-l.debit), 0)
+            FROM accounting_voucher_lines l
+            INNER JOIN accounting_vouchers v ON v.id=l.voucher_id
+            WHERE v.company_id=:c AND v.source_type='parasay_customer_opening'
+              AND l.account_code='3101'
+        """),{"c":company}).scalar()
+        if abs(Decimal(str(clearing or 0)) - Decimal("35779683921")) > Decimal("0.01"):
+            raise HTTPException(409, "Previous customer-opening GL clearing is missing or altered")
+        prior_final = conn.execute(text("""
+            SELECT COUNT(*) FROM accounting_vouchers
+            WHERE company_id=:c AND source_type='parasay_source_residual_14050729'
+        """),{"c":company}).scalar()
+        if prior_final:
+            raise HTTPException(409, "PARASAY residual GL voucher already exists")
+        charts = {
+            row[0] for row in conn.execute(text("""
+                SELECT code FROM chart_accounts
+                WHERE company_id=:c AND code LIKE 'PS-M-%'
+            """),{"c":company}).all()
+        }
+        if len(charts) != 283 or any("PS-M-"+str(id) not in charts for id in nonzero):
+            raise HTTPException(409, "PARASAY chart is incomplete")
+        products = conn.execute(text("""
+            SELECT id, code, name, stock FROM products WHERE company_id=:c
+        """),{"c":company}).mappings().all()
+        by_code={}
+        for product in products:
+            key=str(product["code"] or "")
+            if key in by_code:
+                raise HTTPException(409, "Duplicate target product code")
+            by_code[key]=product
+        if len(products)!=1490:
+            raise HTTPException(409, "Expected exactly 1490 imported products")
+        if any(Decimal(str(p["stock"] or 0)) != 0 for p in products):
+            raise HTTPException(409, "Some target stock is not zero; stopping to avoid overwrite")
+        codes = [g["Code"] for g in goods]
+        if len(set(codes))!=1490 or set(codes)!=set(by_code):
+            raise HTTPException(409, "PARASAY and VITALIX goods codes do not match")
+        quantities = [Decimal(g["NowAmount"] or "0") for g in goods]
+        if sum(quantities) != Decimal("20020") or sum(x!=0 for x in quantities)!=440:
+            raise HTTPException(409, "Source inventory quantities changed")
+        if sum(x<0 for x in quantities)!=2:
+            raise HTTPException(409, "Unexpected source negative stock rows")
+        # Count any prior movement in this company, regardless of whether
+        # a product's current stock has returned to zero since that movement.
+        movement_exists = conn.execute(text("""
+            SELECT COUNT(*) FROM stock_movements m
+            INNER JOIN products p ON p.id=m.product_id
+            WHERE p.company_id=:c
+        """),{"c":company}).scalar()
+        if movement_exists:
+            raise HTTPException(409, "Existing inventory movements require manual reconciliation")
+        lines=[]
+        for source_id, value in sorted(nonzero.items()):
+            lines.append({
+                "account_code": "PS-M-"+str(source_id),
+                "debit": float(value) if value>0 else 0,
+                "credit": float(-value) if value<0 else 0,
+                "description": "PARASAY Moien ID "+str(source_id)+" opening through 1405/07/29",
+            })
+        lines.append({
+            "account_code": "3101", "debit": 35779683921.0,
+            "description": "Clear exactly the customer-opening 3101 credit (no second customer entry)",
+        })
+        voucher_id=post_balanced_voucher(
+            "parasay_source_residual_14050729", None,
+            "PARASAY remaining GL snapshot, excludes prior customer subledgers",
+            lines, company, voucher_date="2026-10-21", connection=conn,
+        )
+        now=_now()
+        for good in goods:
+            product=by_code[good["Code"]]
+            quantity=Decimal(good["NowAmount"] or "0")
+            if quantity==0:
+                continue
+            updated=conn.execute(text("""
+                UPDATE products SET stock=:quantity
+                WHERE company_id=:company AND id=:id AND COALESCE(stock,0)=0
+            """),{"quantity":float(quantity),"company":company,"id":product["id"]})
+            if updated.rowcount!=1:
+                raise HTTPException(409,"Product stock changed during opening import")
+            conn.execute(text("""
+                INSERT INTO stock_movements
+                 (warehouse,product_id,product_name,quantity,movement_type,
+                  movement_date,note,created_at,warehouse_id)
+                VALUES
+                 (:warehouse,:product_id,:product_name,:quantity,'opening_import',
+                  '2026-10-21',:note,:now,NULL)
+            """),{"warehouse":DEFAULT_WAREHOUSE_NAME,"product_id":product["id"],
+                   "product_name":product["name"],"quantity":float(quantity),
+                   "note":"PARASAY physical stock snapshot 1405/07/29; valuation is separate GL snapshot",
+                   "now":now})
+        result={"voucher_id":voucher_id,"gl_lines":len(lines),
+                "stock_updated":440,"stock_negative":2,
+                "stock_total": "20020", "gl_residual_net":"-35779683921",
+                "customer_opening_clearing_debit":"35779683921",
+                "source_cutoff":"1405/07/29"}
+        conn.execute(text("""
+            INSERT INTO parasay_migration_finalizations
+            (company_id,scope,details_json,created_at)
+            VALUES (:c,'opening',:data,:now)
+        """),{"c":company,"data":json.dumps(result),"now":now})
+    return {"status":"applied","company_id":company,**result,
+            "customer_opening_untouched":True,
+            "cheque_staging_untouched":True,
+            "bank_subaccounts_still_require_mapping":True}
