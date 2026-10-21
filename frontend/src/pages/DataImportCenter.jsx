@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Download, FileSpreadsheet, History, LayoutTemplate, Save, Trash2, Upload } from "lucide-react";
 import toast from "react-hot-toast";
 import { useLanguage } from "../localization/useLanguage";
+import { API_URL, getAuthHeaders } from "../services/api";
 import { toPersianDigits, toEnglishDigits } from "../localization/helpers";
 import { confirmAction } from "../components/ui/confirmService";
 import {
@@ -29,6 +30,10 @@ export default function DataImportCenter() {
   const pd = (value) => (language === "fa" ? toPersianDigits(value) : value);
   const [entity, setEntity] = useState("customers");
   const [file, setFile] = useState(null);
+  const [parasayFiles, setParasayFiles] = useState({});
+  const [parasayPreviews, setParasayPreviews] = useState({});
+  const [parasayStaged, setParasayStaged] = useState({});
+  const [parasayBusy, setParasayBusy] = useState(false);
   const [openingDate, setOpeningDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [preview, setPreview] = useState(null);
   const [customerOpeningPreview, setCustomerOpeningPreview] = useState(null);
@@ -202,6 +207,42 @@ export default function DataImportCenter() {
     } catch (error) { toast.error(error.message); }
     finally { setBusy(false); }
   }
+  async function stageParasayRequest(kind, action, fileToSend) {
+    const form = new FormData();
+    if (fileToSend) form.append("file", fileToSend);
+    const headers = getAuthHeaders();
+    delete headers["Content-Type"];
+    delete headers["content-type"];
+    const result = await fetch(`${API_URL}/api/data-import/parasay-stage/${kind}/${action}${action==="apply"?"?confirm=STAGE_WITHOUT_POSTING":""}`, {
+      method: "POST", headers, body: form,
+    });
+    const response = await result.json().catch(() => ({}));
+    if (!result.ok) throw new Error(typeof response.detail === "string" ? response.detail : "خطا در بررسی اطلاعات پاراسای");
+    return response;
+  }
+  async function previewParasayKind(kind) {
+    if (!parasayFiles[kind]) return toast.error("فایل منبع را انتخاب کنید");
+    setParasayBusy(true);
+    try {
+      const preview = await stageParasayRequest(kind, "preview", parasayFiles[kind]);
+      setParasayPreviews(x => ({...x, [kind]: preview}));
+      toast.success("کنترل داده‌ها بدون ثبت انجام شد");
+    } catch (error) { toast.error(error.message); }
+    finally {setParasayBusy(false);}
+  }
+  async function applyParasayKind(kind) {
+    const preview = parasayPreviews[kind];
+    if (!preview?.can_apply || !parasayFiles[kind]) return;
+    if (!window.confirm("این کار فقط نسخه‌ای از داده‌های مبدأ را برای تطبیق ذخیره می‌کند. هیچ موجودی یا سند حسابداری ثبت نمی‌شود. تأیید؟")) return;
+    setParasayBusy(true);
+    try {
+      const answer = await stageParasayRequest(kind, "apply", parasayFiles[kind]);
+      setParasayStaged(x => ({ ...x, [kind]: answer.count }));
+      setParasayPreviews(x => ({ ...x, [kind]: { ...preview, can_apply: false, existing_staged: answer.count }}));
+      toast.success("اطلاعات بدون ثبت مالی ذخیره شد");
+    } catch (error) { toast.error(error.message); }
+    finally {setParasayBusy(false);}
+  }
   const card = { background: "var(--erp-panel-solid)", border: "1px solid var(--erp-border)", borderRadius: 24, boxShadow: "0 18px 55px rgba(2,6,23,.28)" };
   return <div dir={dir} style={{ maxWidth: 1500, margin: "0 auto", color: "var(--erp-text)" }}>
     <header style={{ display: "flex", gap: 14, alignItems: "center", marginBottom: 18 }}>
@@ -224,6 +265,37 @@ export default function DataImportCenter() {
         />
       </div>
       <p style={{ color: "var(--erp-muted)", fontSize: 13, marginBottom: 0 }}>{t.order}</p>
+    </section>
+
+    <section style={{ ...card, padding: 18, marginBottom: 14 }}>
+      <h2 style={{ marginTop: 0, fontSize: 19 }}>مرکز انتقال باقی‌مانده پاراسای — هایپر دکتر</h2>
+      <p style={{ color: "var(--erp-muted)" }}>سه فایل اصلی قبلاً استخراج شده‌اند. ابتدا با کنترل جمع و تعداد خوانده و در جدول مستقل ذخیره می‌شوند؛ بدون افزایش موجودی، تغییر مانده مشتریان یا صدور سند جدید. ورود عملیاتی پس از تطبیق انبار، حساب‌ها و ۳۱۰۱ انجام می‌شود.</p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(265px,1fr))", gap: 12 }}>
+        {[
+          {kind: "inventory", title: "موجودی ۱٬۴۹۰ کالا / ۴۴۰ دارای موجودی", file: "PARASAY7_ALL_GOODS.csv"},
+          {kind: "banks", title: "۱۸ حساب بانکی", file: "PARASAY_Bank_Final_Balances.csv"},
+          {kind: "gl_residual", title: "۲۸۳ حساب معین / ۱۲ مانده غیرصفر", file: "PARASAY_Other_Accounts_1405-07-29.csv"},
+        ].map(item => (
+          <div key={item.kind} style={{ border: "1px solid var(--erp-border)", borderRadius: 14, padding: 12, minWidth: 0 }}>
+            <h3 style={{ margin: "0 0 8px", fontSize: 15 }}>{item.title}</h3>
+            <p style={{ color: "var(--erp-muted)", fontSize: 12 }}>{item.file}</p>
+            <input type="file" accept=".csv" onChange={e => {
+              setParasayFiles(x => ({...x,[item.kind]:e.target.files?.[0] || null}));
+              setParasayPreviews(x => ({...x,[item.kind]:null}));
+            }} style={{ maxWidth: "100%" }} />
+            <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
+              <button type="button" onClick={() => previewParasayKind(item.kind)} disabled={parasayBusy || !parasayFiles[item.kind]} style={{ padding: "8px 12px", borderRadius: 9, fontWeight: 700 }}>بررسی بدون ثبت</button>
+              <button type="button" onClick={() => applyParasayKind(item.kind)} disabled={parasayBusy || !parasayPreviews[item.kind]?.can_apply} style={{ padding: "8px 12px", borderRadius: 9, fontWeight: 700 }}>ثبت فایل مبدأ بدون گردش مالی</button>
+            </div>
+            {parasayPreviews[item.kind] && <p style={{ fontSize: 13, marginTop: 10 }}>
+              ردیف: {pd(parasayPreviews[item.kind].count)} | غیرصفر: {pd(parasayPreviews[item.kind].nonzero)} |
+              جمع: {pd(parasayPreviews[item.kind].source_total)} |
+              قبلاً ذخیره‌شده: {pd(parasayPreviews[item.kind].existing_staged)}
+            </p>}
+            {parasayStaged[item.kind] ? <p style={{ color: "var(--erp-success)" }}>فایل مبدأ با {pd(parasayStaged[item.kind])} ردیف ذخیره شد؛ ثبت مالی صفر.</p> : null}
+          </div>
+        ))}
+      </div>
     </section>
 
     {entity === "existing_customer_opening" ? (
