@@ -1,7 +1,9 @@
+import csv
+import io
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_HALF_UP
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import text
 
@@ -502,3 +504,153 @@ def delete_pending_cheque(cheque_id: int, request: Request):
         raise
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error))
+
+
+# PARASAY migration staging is intentionally separate from operational treasury:
+# no GL vouchers, no customer entries, and no fake customer for unknown parties.
+def _ensure_parasay_opening_cheques(conn):
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS parasay_opening_cheques (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER NOT NULL,
+            source_check_id INTEGER NOT NULL,
+            cheque_number TEXT NOT NULL,
+            due_date_jalali TEXT NOT NULL,
+            amount_irr TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            original_state TEXT NOT NULL,
+            bank_name_original TEXT,
+            source_party_id TEXT,
+            party_name_original TEXT,
+            source_bank_id TEXT,
+            mapping_status TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(company_id, source_check_id)
+        )
+    """))
+
+
+def _opening_company(conn, request):
+    company_id = current_company_id(request)
+    company = conn.execute(text(
+        "SELECT name FROM companies WHERE id=:id AND is_active=1"
+    ), {"id": company_id}).mappings().first()
+    if not company or "هایپر" not in (company["name"] or ""):
+        raise HTTPException(status_code=403, detail="PARASAY opening only for Hyper Doctor")
+    return company_id
+
+
+def _validate_parasay_cheques(raw):
+    try:
+        body = raw.decode("utf-8-sig")
+        reader = csv.DictReader(io.StringIO(body))
+        expected = {"source_check_id", "cheque_number", "due_date_jalali",
+                    "amount_irr", "direction", "original_state",
+                    "source_party_id", "mapping_status", "migration_cutoff"}
+        if not expected.issubset(reader.fieldnames or []):
+            raise ValueError("Wrong PARASAY staging CSV columns")
+        rows = list(reader)
+        if len(rows) != 28:
+            raise ValueError("Expected exactly 28 opening cheques")
+        if len({r["source_check_id"] for r in rows}) != 28:
+            raise ValueError("Duplicate source CheckID")
+        totals = {"received": Decimal(0), "payable": Decimal(0)}
+        counts = {"received": 0, "payable": 0}
+        for row in rows:
+            direction = row["direction"]
+            if direction not in totals:
+                raise ValueError("Unexpected direction")
+            if row["migration_cutoff"] != "1405/07/29":
+                raise ValueError("Wrong cutoff")
+            if not row["source_check_id"].isdigit() or not row["cheque_number"]:
+                raise ValueError("Invalid source cheque identity")
+            amount = Decimal(row["amount_irr"])
+            if not amount.is_finite() or amount <= 0 or amount != amount.quantize(Decimal("0.01")):
+                raise ValueError("Invalid amount")
+            if not row["due_date_jalali"].startswith("1405/"):
+                raise ValueError("Unexpected Jalali due date")
+            counts[direction] += 1
+            totals[direction] += amount
+            row["mapping_status"] = (
+                "PARTY_UNKNOWN" if row["source_party_id"] in ("", "-1")
+                else "VERIFY_PARTY_MAPPING"
+            )
+        if (counts != {"received": 10, "payable": 18}
+                or totals["received"] != Decimal("3509040000")
+                or totals["payable"] != Decimal("26415000000")):
+            raise ValueError("PARASAY 28-cheque reconciliation controls failed")
+        return rows, counts, totals
+    except (UnicodeError, csv.Error, ValueError, ArithmeticError, KeyError) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+@router.post("/parasay-opening-cheques/preview")
+async def preview_parasay_opening_cheques(request: Request, file: UploadFile = File(...)):
+    contents = await file.read()
+    if len(contents) > 1_000_000:
+        raise HTTPException(status_code=413, detail="Opening file too large")
+    with engine.begin() as conn:
+        company_id = _opening_company(conn, request)
+        _ensure_parasay_opening_cheques(conn)
+        existing = conn.execute(text(
+            "SELECT COUNT(*) FROM parasay_opening_cheques WHERE company_id=:company"
+        ), {"company": company_id}).scalar()
+    rows, counts, totals = _validate_parasay_cheques(contents)
+    return {"company_id": company_id, "count": len(rows),
+            "received_count": counts["received"], "payable_count": counts["payable"],
+            "received_irr": str(totals["received"]), "payable_irr": str(totals["payable"]),
+            "unknown_party_count": sum(r["mapping_status"] == "PARTY_UNKNOWN" for r in rows),
+            "already_staged": existing, "can_apply": existing == 0,
+            "note": "Staging only: no customer balance or ledger posts."}
+
+
+@router.post("/parasay-opening-cheques/apply")
+async def apply_parasay_opening_cheques(request: Request, file: UploadFile = File(...), confirm: str = ""):
+    if confirm != "STAGE_PARASAY_28_NO_GL":
+        raise HTTPException(status_code=400, detail="Explicit staging confirmation required")
+    raw = await file.read()
+    if len(raw) > 1_000_000:
+        raise HTTPException(status_code=413, detail="Opening file too large")
+    rows, counts, totals = _validate_parasay_cheques(raw)
+    with engine.begin() as conn:
+        company_id = _opening_company(conn, request)
+        _ensure_parasay_opening_cheques(conn)
+        existing = conn.execute(text(
+            "SELECT COUNT(*) FROM parasay_opening_cheques WHERE company_id=:company"
+        ), {"company": company_id}).scalar()
+        if existing:
+            raise HTTPException(status_code=409, detail="PARASAY cheque batch already staged")
+        now = datetime.now(timezone.utc).isoformat()
+        for row in rows:
+            conn.execute(text("""
+                INSERT INTO parasay_opening_cheques
+                    (company_id, source_check_id, cheque_number, due_date_jalali,
+                     amount_irr, direction, original_state, bank_name_original,
+                     source_party_id, party_name_original, source_bank_id,
+                     mapping_status, created_at)
+                VALUES (:company, :id, :number, :due, :amount, :direction, :state,
+                        :bank, :party, :partyname, :bankid, :mapping, :created)
+            """), {"company": company_id, "id": int(row["source_check_id"]),
+                   "number": row["cheque_number"], "due": row["due_date_jalali"],
+                   "amount": row["amount_irr"], "direction": row["direction"],
+                   "state": row["original_state"], "bank": row.get("bank_name_original", ""),
+                   "party": row["source_party_id"], "partyname": row.get("party_name_original", ""),
+                   "bankid": row.get("source_bank_id", ""), "mapping": row["mapping_status"],
+                   "created": now})
+    return {"status": "staged", "inserted": 28, "no_gl_posting": True,
+            "received_irr": str(totals["received"]), "payable_irr": str(totals["payable"])}
+
+
+@router.get("/parasay-opening-cheques")
+def list_parasay_opening_cheques(request: Request):
+    with engine.begin() as conn:
+        company_id = _opening_company(conn, request)
+        _ensure_parasay_opening_cheques(conn)
+        rows = conn.execute(text("""
+            SELECT source_check_id, cheque_number, due_date_jalali, amount_irr,
+                   direction, original_state, bank_name_original, source_party_id,
+                   party_name_original, mapping_status
+            FROM parasay_opening_cheques
+            WHERE company_id=:company ORDER BY due_date_jalali, source_check_id
+        """), {"company": company_id}).mappings().all()
+    return {"items": [dict(r) for r in rows], "no_gl_posting": True}
