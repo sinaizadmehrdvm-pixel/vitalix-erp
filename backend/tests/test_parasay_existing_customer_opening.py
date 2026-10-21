@@ -75,6 +75,7 @@ class ParasayExistingOpeningTests(unittest.TestCase):
             auth_request(company),
             UploadFile(filename="PARASAY_400_Customer_Balances.csv",
                        file=io.BytesIO(blob if blob is not None else source_csv())),
+            opening_date="2026-10-21", source_cutoff="1405/07/29",
         ))
 
     def test_preview_400_codes_98_balances_without_writes(self):
