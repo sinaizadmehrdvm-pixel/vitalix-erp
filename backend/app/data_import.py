@@ -2125,8 +2125,8 @@ def preview_parasay_finalization(request: Request):
             blockers.append("Source inventory or GL controls changed")
         if bank_total != Decimal("22036831136") or gl_nonzero != 12:
             blockers.append("Bank or GL source controls changed")
-        if done:
-            blockers.append("This company already has finalizations: " + ", ".join(done))
+        if "opening" in done:
+            blockers.append("PARASAY opening stock and GL have already been posted")
     return {
         "company_id":company, "source_total_accounts":len(totals),
         "source_moien_accounts":len(moien), "source_duplicate_moien_codes":code_duplicates,
@@ -2135,8 +2135,9 @@ def preview_parasay_finalization(request: Request):
         "bank_accounts":len(banks), "bank_total_irr":str(bank_total),
         "gl_nonzero_accounts":gl_nonzero, "residual_net_irr":str(net_residual),
         "cheques_staged":source_checks, "customer_opening_applied":bool(prior_opening),
-        "already_finalized":done, "blockers":blockers,
-        "can_finalize":not blockers,
+        "already_finalized":done, "chart_finalized":"chart" in done,
+        "opening_finalized":"opening" in done, "blockers":blockers,
+        "can_finalize":not blockers and "chart" in done,
         "warning":"Two negative product quantities and PARASAY bank 7579 personal account require explicit manual review. The GL is a snapshot including income/expense through the cutoff."}
 
 
