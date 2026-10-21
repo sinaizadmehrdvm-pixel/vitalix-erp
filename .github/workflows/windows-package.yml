@@ -1,4 +1,4 @@
-name: Vetrix Windows Package
+name: VITALIX Windows Package
 
 on:
   pull_request:
@@ -47,13 +47,13 @@ jobs:
       - name: Build portable executable
         shell: pwsh
         run: |
-          pyinstaller --noconfirm --clean --onefile --name VetrixERP --paths backend --collect-submodules app --collect-all reportlab --collect-all arabic_reshaper --add-data "frontend/dist;frontend_dist" --version-file "scripts/windows/version_info.txt" backend/desktop_launcher.py
+          pyinstaller --noconfirm --clean --onefile --name VITALIXERP --paths backend --collect-submodules app --collect-all reportlab --collect-all arabic_reshaper --add-data "frontend/dist;frontend_dist" --version-file "scripts/windows/version_info.txt" backend/desktop_launcher.py
       - name: Smoke test packaged application
         shell: pwsh
         run: |
           $env:VETRIX_NO_BROWSER = "1"
           $env:VETRIX_NO_PAUSE = "1"
-          $process = Start-Process ".\dist\VetrixERP.exe" -PassThru
+          $process = Start-Process ".\dist\VITALIXERP.exe" -PassThru
           try {
             $ready = $false
             for ($i = 0; $i -lt 60; $i++) {
@@ -79,17 +79,17 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force package | Out-Null
-          Copy-Item dist/VetrixERP.exe package/VetrixERP.exe
+          Copy-Item dist/VITALIXERP.exe package/VITALIXERP.exe
           Copy-Item WINDOWS_PORTABLE.md package/README.txt
-          Compress-Archive -Path package/* -DestinationPath VetrixERP-Windows-x64.zip
-          (Get-FileHash VetrixERP-Windows-x64.zip -Algorithm SHA256).Hash | Set-Content VetrixERP-Windows-x64.sha256
+          Compress-Archive -Path package/* -DestinationPath VITALIXERP-Windows-x64.zip
+          (Get-FileHash VITALIXERP-Windows-x64.zip -Algorithm SHA256).Hash | Set-Content VITALIXERP-Windows-x64.sha256
       - name: Upload Windows portable
         uses: actions/upload-artifact@v4
         with:
-          name: VetrixERP-Windows-x64
+          name: VITALIXERP-Windows-x64
           path: |
-            VetrixERP-Windows-x64.zip
-            VetrixERP-Windows-x64.sha256
+            VITALIXERP-Windows-x64.zip
+            VITALIXERP-Windows-x64.sha256
           if-no-files-found: error
           retention-days: 30
 
@@ -106,7 +106,7 @@ jobs:
       - name: Download verified Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: VetrixERP-Windows-x64
+          name: VITALIXERP-Windows-x64
           path: release-assets
       - name: Publish immutable release
         env:
@@ -116,4 +116,4 @@ jobs:
             echo "Release v1.4.1 already exists; refusing to replace immutable assets."
             exit 0
           fi
-          gh release create v1.4.1             release-assets/VetrixERP-Windows-x64.zip             release-assets/VetrixERP-Windows-x64.sha256             --target "$GITHUB_SHA"             --title "VITALIX ERP 1.4.1"             --notes-file RELEASE_NOTES.md
+          gh release create v1.4.1             release-assets/VITALIXERP-Windows-x64.zip             release-assets/VITALIXERP-Windows-x64.sha256             --target "$GITHUB_SHA"             --title "VITALIX ERP 1.4.1"             --notes-file RELEASE_NOTES.md
