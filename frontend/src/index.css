@@ -1046,8 +1046,5 @@ img, svg { max-width: 100%; }
 @container (max-width: 580px) {
   .vitalix-products-form-grid,
   .vitalix-products-summary { grid-template-columns: minmax(0, 1fr); }
-  .vitalix-products-page :where(.bg-\\[var\\(--erp-bg-soft\\)\\]) {
-    min-width: 0;
-  }
   .vitalix-products-filters > * { flex: 1 1 min(100%, 160px); }
 }
