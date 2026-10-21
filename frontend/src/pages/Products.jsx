@@ -805,7 +805,7 @@ export default function Products() {
   );
 
   return (
-    <div className="space-y-6 vitalix-products-page" dir={dir} style={{ direction: dir }}>
+    <div className="space-y-6" dir={dir} style={{ direction: dir }}>
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-4xl font-black text-[var(--erp-accent)]">{label.title}</h1>
@@ -855,7 +855,7 @@ export default function Products() {
         </div>
       )}
 
-      <div className="vitalix-products-summary grid gap-5">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
         <Summary icon={<Package />} title={tr("تعداد کالا", "عدد المنتجات", "Ürün sayısı", "Products")} value={n(products.length)} />
         <Summary icon={<Boxes />} title={tr("موجودی کل", "إجمالي المخزون", "Toplam stok", "Total stock")} value={n(totalStock)} />
         <Summary
@@ -877,7 +877,7 @@ export default function Products() {
       </div>
 
       <div className="bg-[var(--erp-bg-soft)] border border-[var(--erp-border)] rounded-3xl p-5">
-        <div className="vitalix-products-form-grid grid gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
           <Field label={label.name}>
             <input className={inputClass} value={faText(form.name, fa)} onChange={(e) => setField("name", faText(e.target.value, fa))} placeholder={label.name} />
           </Field>
@@ -1035,7 +1035,7 @@ export default function Products() {
           </button>
         </div>
 
-        <div className="vitalix-products-filters flex items-center gap-2 flex-wrap mb-5">
+        <div className="flex items-center gap-2 flex-wrap mb-5">
           <Select
             value={brandFilter}
             onChange={(value) => setBrandFilter(value)}
@@ -1140,7 +1140,7 @@ export default function Products() {
           fa={fa}
         />
 
-        <Table className="vitalix-products-table">
+        <Table className="min-w-[860px]">
           <Thead>
             <Th className="w-12">{label.row}</Th>
             <SortableTh field="name" sortField={sortField} sortDir={sortDir} onSort={onSort}>{tr("کالا", "المنتج", "Ürün", "Product")}</SortableTh>
@@ -1170,13 +1170,13 @@ export default function Products() {
                   <Tr key={item.id} className="hover:bg-cyan-500/5">
                     <Td className="text-[var(--erp-muted)] font-bold">{n(index + 1)}</Td>
                     <Td>
-                      <div className="vitalix-products-name flex items-center gap-3">
+                      <div className="flex items-center gap-3">
                         <div className="w-12 h-12 rounded-xl bg-[var(--erp-glow)] flex items-center justify-center overflow-hidden shrink-0">
                           {item.image ? <img src={item.image} className="w-full h-full object-cover" alt="" /> : <Package size={18} />}
                         </div>
 
-                        <div className="min-w-0">
-                          <b className="block break-words">
+                        <div>
+                          <b>
                             {faText(item.name, fa)}
                             {item.is_active === false && <span className="mx-2 text-xs px-2 py-0.5 rounded-full bg-[var(--erp-muted)]/20 text-[var(--erp-muted)]">{label.inactive}</span>}
                             {item.pending_sync && <span className="mx-2 text-xs text-amber-300">{tr("آفلاین", "غير متصل", "Çevrimdışı", "Offline")}</span>}
