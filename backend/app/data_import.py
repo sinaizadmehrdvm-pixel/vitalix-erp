@@ -2112,6 +2112,14 @@ def preview_parasay_finalization(request: Request):
             for x in goods if Decimal(x["NowAmount"] or "0") < 0
         ]
         total_stock = sum((Decimal(x["NowAmount"] or "0") for x in goods),Decimal(0))
+        source_buyavg_stock_value = sum(
+            (Decimal(x["NowAmount"] or "0") * Decimal(
+                "0" if x.get("BuyAvg") in (None,"","NULL") else x["BuyAvg"]
+            ) for x in goods), Decimal(0)
+        )
+        source_gl_inventory = next((Decimal(x["OtherNetBalance"])
+            for x in residual if str(x["MoienID"])=="130"), Decimal(0))
+        stock_valuation_gap = source_gl_inventory - source_buyavg_stock_value
         net_residual = sum((Decimal(x["OtherNetBalance"] or "0") for x in residual),Decimal(0))
         bank_total = sum((Decimal(x["NetBalance"] or "0") for x in banks),Decimal(0))
         existing_nonzero_stock = sum(Decimal(str(p["stock"] or 0)) != 0 for p in product_rows)
@@ -2148,6 +2156,9 @@ def preview_parasay_finalization(request: Request):
         "source_moien_accounts":len(moien), "source_duplicate_moien_codes":code_duplicates,
         "source_product_count":len(goods), "matched_products":len(goods)-len(missing_codes),
         "product_total_quantity":str(total_stock), "negative_stock":qty_changes,
+        "source_gl_inventory_irr":str(source_gl_inventory),
+        "source_stock_buyavg_irr":str(source_buyavg_stock_value),
+        "source_stock_valuation_gap_irr":str(stock_valuation_gap),
         "bank_accounts":len(banks), "bank_total_irr":str(bank_total),
         "existing_bank_accounts":prior_bank_accounts,
         "gl_nonzero_accounts":gl_nonzero, "residual_net_irr":str(net_residual),
@@ -2268,6 +2279,8 @@ def finalize_parasay_stock_and_ledger(request: Request,
         nonzero = {key:value for key,value in amount_by_id.items() if value}
         if len(nonzero)!=12 or sum(nonzero.values()) != Decimal("-35779683921"):
             raise HTTPException(409, "Unreconciled PARASAY residual GL; cannot post")
+        if amount_by_id.get(130) != Decimal("56508836736"):
+            raise HTTPException(409, "PARASAY inventory ledger does not match financial snapshot")
         if amount_by_id.get(104) != Decimal("22036831136"):
             raise HTTPException(409, "PARASAY bank Moien does not match bank account detail")
         if amount_by_id.get(117) != Decimal("3509040000") or amount_by_id.get(193) != Decimal("-26415000000"):
