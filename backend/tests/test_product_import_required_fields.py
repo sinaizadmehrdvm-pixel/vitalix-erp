@@ -11,7 +11,7 @@ from pathlib import Path
 
 def test_product_import_sets_required_is_active_on_fresh_sqlite():
     source = (Path(__file__).resolve().parents[1] / "app" / "data_import.py").read_text(encoding="utf-8")
-    product_branch = source.split('elif entity == "products":', 1)[1]
+    product_branch = source.split('def apply_import(', 1)[1].split('elif entity == "products":', 1)[1]
     match = re.search(
         r'INSERT INTO products\s*\((.*?)\)\s*VALUES\s*\((.*?)\)',
         product_branch,
