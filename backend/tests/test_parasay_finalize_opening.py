@@ -112,6 +112,8 @@ class ParasayFinalizeTests(unittest.TestCase):
             self.assertEqual(len(calls),1)
         with self.engine.begin() as conn:
             self.assertEqual(conn.execute(text("SELECT COUNT(*) FROM stock_movements")).scalar(),440)
+            self.assertEqual(conn.execute(text("SELECT COUNT(*) FROM bank_accounts")).scalar(),18)
+            self.assertEqual(conn.execute(text("SELECT SUM(opening_balance) FROM bank_accounts")).scalar(),22036831136)
             self.assertEqual(conn.execute(text("SELECT SUM(stock) FROM products")).scalar(),20020)
             self.assertEqual(conn.execute(text("SELECT stock FROM products WHERE id=1")).scalar(),-1)
             self.assertEqual(conn.execute(text(
