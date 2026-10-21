@@ -1732,3 +1732,305 @@ def apply_existing_customer_opening(batch_id: str, request: Request, confirm: st
             WHERE id=:id AND company_id=:cid
         """), {"result":json.dumps(result),"now":_now(),"id":batch_id,"cid":company_id})
         return result
+
+
+# PARASAY migration workbench: immutable, source-id-keyed raw staging.
+# Deliberately does NOT issue vouchers, update stock, or create bank accounts.
+# The original ledger contains period P&L and an existing VITALIX customer
+# opening clearing voucher; importing any of those as GL a second time would
+# double post. Keep source snapshots inspectable pending an approved crosswalk.
+_PARASAY_STAGE_DEFS = {
+    "inventory": {"required": ("ID", "Code", "Name", "NowAmount"),
+                  "expected": 1490},
+    "banks": {"required": ("BankAccountID", "BankName", "NetBalance"),
+              "expected": 18},
+    "gl_residual": {"required": ("MoienID", "MoienCode", "MoienName", "OtherNetBalance"),
+                    "expected": 283},
+    "chart_total": {"required": ("ID", "Code", "AccountName"), "expected": 43},
+    "chart_moien": {"required": ("ID", "Code", "AccountName", "TotalBookID"), "expected": 283},
+}
+
+
+def _parasay_stage_validate(kind, raw):
+    import csv
+    from decimal import Decimal, InvalidOperation
+    if kind not in _PARASAY_STAGE_DEFS:
+        raise HTTPException(404, "Unknown PARASAY source category")
+    try:
+        decoded = raw.decode("utf-8-sig")
+        lines = csv.DictReader(io.StringIO(decoded), delimiter="؛")
+        header = lines.fieldnames or []
+        required = _PARASAY_STAGE_DEFS[kind]["required"]
+        if not all(col in header for col in required):
+            raise ValueError("Missing original PARASAY columns: " + ", ".join(set(required)-set(header)))
+        rows = list(lines)
+        if len(rows) != _PARASAY_STAGE_DEFS[kind]["expected"]:
+            raise ValueError("Unexpected original PARASAY row count")
+        identifiers = []
+        if kind in ("chart_total", "chart_moien"):
+            for row in rows:
+                if not row["ID"].isdigit() or not row["Code"].strip():
+                    raise ValueError("Invalid account identity")
+                identifiers.append(row["ID"])
+            if len(set(identifiers)) != len(identifiers):
+                raise ValueError("Duplicate account source IDs")
+            return rows, {"count": len(rows), "nonzero": 0, "source_total": "0",
+                          "code_duplicates": len(rows)-len({r["Code"] for r in rows}),
+                          "is_accounting_posted": False}
+        nonzero = 0
+        total = Decimal(0)
+        negative_stock = 0
+        for row in rows:
+            identifier = row["ID"] if kind == "inventory" else (
+                row["BankAccountID"] if kind == "banks" else row["MoienID"])
+            if not identifier or not str(identifier).isdigit():
+                raise ValueError("Missing or nonnumeric original identifier")
+            identifiers.append(identifier)
+            value_key = ("NowAmount" if kind == "inventory"
+                         else "NetBalance" if kind == "banks" else "OtherNetBalance")
+            value = Decimal(row.get(value_key) or "0")
+            if not value.is_finite():
+                raise ValueError("Non-finite amount or quantity")
+            total += value
+            nonzero += value != 0
+            if kind == "inventory":
+                negative_stock += value < 0
+        if len(set(identifiers)) != len(identifiers):
+            raise ValueError("Duplicate source IDs")
+        expected_nonzero = {"inventory": 440, "banks": 18, "gl_residual": 12}
+        if nonzero != expected_nonzero[kind]:
+            raise ValueError("Control number of nonzero source rows did not match")
+        control_totals = {"inventory": Decimal("20020"),
+                          "banks": Decimal("22036831136"),
+                          "gl_residual": Decimal("-35779683921")}
+        if total != control_totals[kind]:
+            raise ValueError("Source totals did not reconcile")
+        return rows, {"count": len(rows), "nonzero": nonzero, "source_total": str(total),
+                      "negative_stock_count": negative_stock,
+                      "is_accounting_posted": False}
+    except (UnicodeError, ValueError, InvalidOperation, csv.Error) as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+
+def _ensure_parasay_stage(conn):
+    conn.execute(text("""
+        CREATE TABLE IF NOT EXISTS parasay_migration_staging (
+            company_id INTEGER NOT NULL,
+            kind TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(company_id, kind, source_id)
+        )
+    """))
+
+
+def _parasay_company(conn, request):
+    company_id = current_company_id(request)
+    company = conn.execute(text(
+        "SELECT name FROM companies WHERE id=:company AND is_active=1"
+    ), {"company": company_id}).mappings().first()
+    if not company or "هایپر" not in (company["name"] or ""):
+        raise HTTPException(403, "PARASAY migration is Hyper Doctor only")
+    return company_id
+
+
+@router.post("/parasay-stage/{kind}/preview")
+async def preview_parasay_source(kind: str, request: Request, file: UploadFile = File(...)):
+    _require_admin(request)
+    raw = await file.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(413, "File too large")
+    rows, summary = _parasay_stage_validate(kind, raw)
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        _ensure_parasay_stage(conn)
+        current = conn.execute(text("""
+            SELECT COUNT(*) FROM parasay_migration_staging
+            WHERE company_id=:company AND kind=:kind
+        """), {"company": company, "kind": kind}).scalar()
+    return {"kind": kind, "company_id": company, **summary,
+            "existing_staged": current, "can_apply": current == 0,
+            "warning": "Review only. No accounting or inventory movements are posted."}
+
+
+@router.post("/parasay-stage/{kind}/apply")
+async def apply_parasay_source(kind: str, request: Request, file: UploadFile = File(...),
+                              confirm: str = ""):
+    _require_admin(request)
+    if confirm != "STAGE_WITHOUT_POSTING":
+        raise HTTPException(400, "Staging-only confirmation required")
+    raw = await file.read(MAX_BYTES + 1)
+    if len(raw) > MAX_BYTES:
+        raise HTTPException(413, "File too large")
+    rows, summary = _parasay_stage_validate(kind, raw)
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        _ensure_parasay_stage(conn)
+        existing = conn.execute(text("""
+            SELECT COUNT(*) FROM parasay_migration_staging
+            WHERE company_id=:company AND kind=:kind
+        """), {"company": company, "kind": kind}).scalar()
+        if existing:
+            raise HTTPException(409, "PARASAY source was already staged. No duplicate import.")
+        id_name = {"inventory": "ID", "banks": "BankAccountID", "gl_residual": "MoienID"}[kind]
+        now = _now()
+        for row in rows:
+            conn.execute(text("""
+                INSERT INTO parasay_migration_staging
+                   (company_id,kind,source_id,payload_json,created_at)
+                VALUES (:company,:kind,:source_id,:payload,:created)
+            """), {"company": company, "kind": kind, "source_id": row[id_name],
+                   "payload": json.dumps(row, ensure_ascii=False), "created": now})
+    return {"status": "staged", "kind": kind, **summary,
+            "no_gl_posting": True, "no_stock_posting": True}
+
+
+@router.get("/parasay-stage/status")
+def parasay_staging_status(request: Request):
+    _require_admin(request)
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        _ensure_parasay_stage(conn)
+        counts = conn.execute(text("""
+            SELECT kind, COUNT(*) AS staged_count FROM parasay_migration_staging
+            WHERE company_id=:company GROUP BY kind
+        """), {"company": company}).mappings().all()
+    return {"company_id": company,
+            "staged_counts": {r["kind"]: r["staged_count"] for r in counts},
+            "financial_posting_performed": False,
+            "warning": "Only source snapshots staged. GL/stock movements require reconciled crosswalk."}
+
+
+# Single-upload PARASAY source package: all four sources are validated first;
+# application is one SQLite transaction. No operational financial writes.
+_PARASAY_PACKAGE_FILES = {
+    "inventory": "PARASAY7_ALL_GOODS.csv",
+    "banks": "PARASAY_Bank_Final_Balances.csv",
+    "gl_residual": "PARASAY_Other_Accounts_1405-07-29.csv",
+    "chart_total": "PARASAY_TotalBookAccounts.csv",
+    "chart_moien": "PARASAY_MoienBookAccounts.csv",
+    "cheques": "VITALIX_PARASAY_28_OPEN_CHECKS_STAGING.csv",
+}
+
+
+def _read_parasay_package(raw):
+    import zipfile
+    import hashlib
+    from app.accounting.treasury import _validate_parasay_cheques
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            names = set(archive.namelist())
+            if not set(_PARASAY_PACKAGE_FILES.values()).issubset(names) or "manifest.json" not in names:
+                raise ValueError("Missing files from official PARASAY package")
+            manifest = json.loads(archive.read("manifest.json"))
+            if (manifest.get("company") != "Hyper Doctor"
+                    or manifest.get("cutoff_jalali") != "1405/07/29"
+                    or manifest.get("mode") != "staging_only_no_financial_posting"):
+                raise ValueError("Invalid company/cutoff/posting mode")
+            validated, summary = {}, {}
+            for kind, filename in _PARASAY_PACKAGE_FILES.items():
+                info = archive.getinfo(filename)
+                if info.file_size > MAX_BYTES or info.file_size < 1:
+                    raise ValueError("Invalid source file size")
+                source = archive.read(filename)
+                expected = manifest["files"][filename]["sha256"]
+                if hashlib.sha256(source).hexdigest() != expected:
+                    raise ValueError("Package checksum error: " + filename)
+                if kind == "cheques":
+                    rows, counts, totals = _validate_parasay_cheques(source)
+                    validated[kind] = rows
+                    summary[kind] = {"count": len(rows), "received": counts["received"],
+                                     "payable": counts["payable"],
+                                     "received_irr": str(totals["received"]),
+                                     "payable_irr": str(totals["payable"]),
+                                     "unknown_party": sum(r["mapping_status"] == "PARTY_UNKNOWN" for r in rows)}
+                else:
+                    rows, checks = _parasay_stage_validate(kind, source)
+                    validated[kind] = rows
+                    summary[kind] = checks
+            return validated, summary
+    except (OSError, KeyError, ValueError, json.JSONDecodeError, zipfile.BadZipFile) as error:
+        raise HTTPException(422, detail=str(error))
+
+
+def _parasay_package_existing(conn, company):
+    from app.accounting.treasury import _ensure_parasay_opening_cheques
+    _ensure_parasay_stage(conn)
+    _ensure_parasay_opening_cheques(conn)
+    existing = {
+        row["kind"]: row["total"]
+        for row in conn.execute(text("""
+            SELECT kind, COUNT(*) AS total FROM parasay_migration_staging
+            WHERE company_id=:company GROUP BY kind
+        """), {"company": company}).mappings()
+    }
+    existing["cheques"] = conn.execute(text("""
+        SELECT COUNT(*) FROM parasay_opening_cheques WHERE company_id=:company
+    """), {"company": company}).scalar()
+    return existing
+
+
+@router.post("/parasay-package/preview")
+async def preview_parasay_package(request: Request, file: UploadFile = File(...)):
+    _require_admin(request)
+    raw = await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:
+        raise HTTPException(413, "Package too large")
+    records, summary = _read_parasay_package(raw)
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        existing = _parasay_package_existing(conn, company)
+    return {"company_id": company, "summary": summary,
+            "existing": existing, "can_apply": not any(existing.values()),
+            "no_accounting_posting": True,
+            "warning": "Only source snapshots will be staged. Two negative stocks, 12 unmapped cheques, and ambiguous bank account 7579 require review."}
+
+
+@router.post("/parasay-package/apply")
+async def apply_parasay_package(request: Request, file: UploadFile = File(...),
+                               confirm: str = ""):
+    _require_admin(request)
+    if confirm != "STAGE_FOUR_SOURCES_NO_FINANCIAL_CHANGES":
+        raise HTTPException(400, "Explicit no-posting confirmation required")
+    raw = await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:
+        raise HTTPException(413, "Package too large")
+    records, summary = _read_parasay_package(raw)
+    from app.accounting.treasury import _ensure_parasay_opening_cheques
+    with engine.begin() as conn:
+        company = _parasay_company(conn, request)
+        if any(_parasay_package_existing(conn, company).values()):
+            raise HTTPException(409, "At least one PARASAY source already staged; duplicate package blocked")
+        now = _now()
+        id_columns = {"inventory": "ID", "banks": "BankAccountID", "gl_residual": "MoienID",
+                      "chart_total": "ID", "chart_moien": "ID"}
+        for kind in id_columns:
+            for item in records[kind]:
+                conn.execute(text("""
+                    INSERT INTO parasay_migration_staging
+                        (company_id,kind,source_id,payload_json,created_at)
+                    VALUES (:company,:kind,:id,:payload,:now)
+                """), {"company": company, "kind": kind, "id": item[id_columns[kind]],
+                       "payload": json.dumps(item, ensure_ascii=False), "now": now})
+        _ensure_parasay_opening_cheques(conn)
+        for item in records["cheques"]:
+            conn.execute(text("""
+                INSERT INTO parasay_opening_cheques
+                    (company_id,source_check_id,cheque_number,due_date_jalali,
+                     amount_irr,direction,original_state,bank_name_original,
+                     source_party_id,party_name_original,source_bank_id,
+                     mapping_status,created_at)
+                VALUES
+                    (:company,:id,:number,:due,:amount,:direction,:state,
+                     :bank,:party,:partyname,:bankid,:mapping,:now)
+            """), {"company": company, "id": int(item["source_check_id"]),
+                   "number": item["cheque_number"], "due": item["due_date_jalali"],
+                   "amount": item["amount_irr"], "direction": item["direction"],
+                   "state": item["original_state"], "bank": item.get("bank_name_original", ""),
+                   "party": item["source_party_id"], "partyname": item.get("party_name_original", ""),
+                   "bankid": item.get("source_bank_id", ""), "mapping": item["mapping_status"],
+                   "now": now})
+    return {"status": "staged", "company_id": company, "summary": summary,
+            "no_gl_posting": True, "no_inventory_changes": True,
+            "no_customer_balance_changes": True}
