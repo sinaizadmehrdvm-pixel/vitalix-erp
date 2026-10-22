@@ -2468,6 +2468,24 @@ def quick_start_readiness(request: Request):
             "no_changes_performed":True,
         }
 
+def _quick_stock_extract(raw):
+    """Accept a standalone source CSV or the already-supplied source ZIP."""
+    if raw[:2] == b"PK":
+        import zipfile
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                candidates=[n for n in archive.namelist()
+                            if n.rsplit("/",1)[-1]=="PARASAY7_ALL_GOODS.csv"]
+                if len(candidates)!=1:
+                    raise HTTPException(422,"Exactly one inventory CSV is required in the ZIP")
+                if archive.getinfo(candidates[0]).file_size>MAX_BYTES:
+                    raise HTTPException(413,"Inventory CSV in ZIP too large")
+                return archive.read(candidates[0])
+        except (zipfile.BadZipFile,OSError) as exc:
+            raise HTTPException(422,"Invalid source ZIP") from exc
+    return raw
+
+
 # Quick-start source stock is separate from historical GL / cheques.
 @router.get("/quick-start/stock-preview")
 def quick_start_stock_preview(request: Request):
@@ -2514,7 +2532,7 @@ async def _quick_stock_source(file):
     raw=await file.read(MAX_BYTES+1)
     if len(raw)>MAX_BYTES:
         raise HTTPException(413,"Stock file too large")
-    rows, summary=_parasay_stage_validate("inventory",raw)
+    rows, summary=_parasay_stage_validate("inventory",_quick_stock_extract(raw))
     return rows,summary
 
 
@@ -2580,7 +2598,7 @@ async def quick_start_direct_stock_apply(request:Request,file:UploadFile=File(..
         raise HTTPException(400,"Explicit positive-stock-only confirmation required")
     raw=await file.read(MAX_BYTES+1)
     if len(raw)>MAX_BYTES:raise HTTPException(413,"Stock file too large")
-    rows,summary=_parasay_stage_validate("inventory",raw)
+    rows,summary=_parasay_stage_validate("inventory",_quick_stock_extract(raw))
     with engine.begin() as conn:
         company=current_company_id(request)
         check=_quick_stock_check(conn,company,rows,allow_negative=True)
