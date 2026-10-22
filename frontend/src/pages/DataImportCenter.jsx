@@ -12,6 +12,7 @@ import {
 } from "../services/dataImportApi";
 import ProductImportWizard from "./dataImport/ProductImportWizard";
 import JalaliDateField from "../components/forms/JalaliDateField";
+import { toJalali } from "../utils/date";
 import Select from "../components/ui/Select";
 
 // Mirrors backend/app/data_import.py's REQUIRED_FIELD - used only to mark
@@ -281,11 +282,11 @@ export default function DataImportCenter() {
     const amount=Number(toEnglishDigits(String(cashOpeningIrr)).replace(/[,،٬\s]/g,""));
     const cutoff=toEnglishDigits(cashOpeningCutoff).trim();
     if(!Number.isSafeInteger(amount)||amount<=0||!/^\d{4}-\d{2}-\d{2}$/.test(cutoff)){
-      toast.error("مبلغ مثبت به ریال و تاریخ میلادی YYYY-MM-DD را وارد کنید");return;
+      toast.error(tr("مبلغ معتبر به ریال و تاریخ شمسی معتبر را وارد کنید","أدخل المبلغ والتاريخ الصحيحين","Geçerli tutar ve tarih girin","Enter a valid amount and date"));return;
     }
     if(action==="apply" && (!cashOpeningPreview?.can_apply ||
       Number(cashOpeningPreview.amount_irr)!==amount ||cashOpeningPreview.cutoff!==cutoff ||
-      !window.confirm(`ثبت مانده افتتاحیه صندوق ${pd(amount)} ریال در ${pd(cutoff)}: بدهکار ۱۱۰۱، بستانکار تسویه افتتاحیه ۳۱۰۱. بدون دریافت نقدی جدید. تأیید می‌کنید؟`)))return;
+      !window.confirm(`ثبت مانده افتتاحیه صندوق ${pd(amount)} ریال در ${pd(language === "fa" ? toJalali(cutoff) : cutoff)}: بدهکار ۱۱۰۱، بستانکار تسویه افتتاحیه ۳۱۰۱. بدون دریافت نقدی جدید. تأیید می‌کنید؟`)))return;
     setParasayBusy(true);
     try{
       const qs=new URLSearchParams({amount_irr:String(amount),cutoff});
@@ -459,16 +460,16 @@ export default function DataImportCenter() {
       </div>
       <div style={{marginTop:14,padding:12,border:"1px solid var(--erp-border)",borderRadius:14}}>
         <strong>مانده افتتاحیه صندوق — مستقل از دریافت و پرداخت</strong>
-        <p style={{fontSize:13,color:"var(--erp-muted)"}}>مبلغ را به ریال و تاریخ پایان دوره را به میلادی وارد کنید. این ثبت یک سند تراز افتتاحیه با حساب واسط ۳۱۰۱ ایجاد می‌کند. دفتر کل هنوز نیازمند تطبیق نهایی است.</p>
+        <p style={{fontSize:13,color:"var(--erp-muted)"}}>در زبان فارسی مبلغ را با ارقام فارسی و تاریخ را از تقویم شمسی انتخاب کنید. سیستم تاریخ را فقط برای ذخیره‌سازی داخلی تبدیل می‌کند. این ثبت با حساب واسط ۳۱۰۱ انجام می‌شود و دفتر کل نیازمند تطبیق نهایی است.</p>
         <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-          <input type="text" inputMode="numeric" placeholder="مبلغ صندوق (ریال)" value={cashOpeningIrr} onChange={v=>{setCashOpeningIrr(v.target.value);setCashOpeningPreview(null);}} />
-          <input type="text" placeholder="تاریخ میلادی، نمونه 2026-10-21" value={cashOpeningCutoff} onChange={v=>{setCashOpeningCutoff(v.target.value);setCashOpeningPreview(null);}} />
+          <input type="text" inputMode="numeric" placeholder={tr("مبلغ صندوق (ریال)","رصيد الصندوق","Kasa bakiyesi","Cash opening amount")} value={language==="fa"?toPersianDigits(cashOpeningIrr):cashOpeningIrr} onChange={v=>{setCashOpeningIrr(toEnglishDigits(v.target.value));setCashOpeningPreview(null);}} />
+          <JalaliDateField language={language} value={cashOpeningCutoff} onChange={value=>{setCashOpeningCutoff(value);setCashOpeningPreview(null);}} placeholder={tr("تاریخ شمسی افتتاحیه","تاريخ الرصيد الافتتاحي","Açılış tarihi","Opening date")} />
         </div>
         <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
           <button type="button" disabled={parasayBusy} onClick={()=>cashOpeningAction("preview")}>بررسی صندوق بدون ثبت</button>
           <button type="button" disabled={!cashOpeningPreview?.can_apply||parasayBusy} onClick={()=>cashOpeningAction("apply")}>ثبت مانده افتتاحیه صندوق پس از تأیید</button>
         </div>
-        {cashOpeningPreview&&<p style={{fontSize:13}}>مبلغ: {pd(cashOpeningPreview.amount_irr)} ریال | تاریخ: {pd(cashOpeningPreview.cutoff)} | خطاها: {(cashOpeningPreview.errors||[]).join("، ")||"ندارد"}</p>}
+        {cashOpeningPreview&&<p style={{fontSize:13}}>مبلغ: {pd(cashOpeningPreview.amount_irr)} ریال | تاریخ: {language==="fa"?toPersianDigits(toJalali(cashOpeningPreview.cutoff)):pd(cashOpeningPreview.cutoff)} | خطاها: {(cashOpeningPreview.errors||[]).join("، ")||"ندارد"}</p>}
       </div>
       <button type="button" onClick={inspectQuickStartStock} style={{marginTop:12,marginInlineStart:8,padding:"10px 14px",borderRadius:12,fontWeight:700}}>کنترل موجودی کالا قبل از انتقال (بدون ثبت)</button>
       {stockPreflight && <div style={{padding:10,marginTop:10,borderRadius:10,border:"1px solid var(--erp-border)",fontSize:13}}>
