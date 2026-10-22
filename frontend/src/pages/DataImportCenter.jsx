@@ -346,6 +346,14 @@ export default function DataImportCenter() {
     </section>
 
     <section style={{ ...card, padding: 18, marginBottom: 14 }}>
+      <h2 style={{ marginTop: 0, fontSize: 19 }}>شروع سریع کسب‌وکار</h2>
+      <p style={{ marginBottom: 8, lineHeight: 1.9 }}>برای شروع کار، فقط اطلاعاتی را منتقل کنید که همین امروز لازم دارید: <strong>طرف‌حساب‌ها و مانده روز، کالاها و موجودی واقعی، مانده بانک و صندوق.</strong> از تاریخ شروع به بعد، چک‌ها، فاکتورها و رویدادهای جدید را در VITALIX ثبت کنید. انتقال تاریخچه قدیمی و کدینگ کامل نرم‌افزار قبلی اجباری نیست.</p>
+      <p style={{ margin: 0, color: "var(--erp-muted)", fontSize: 13 }}>برای ورود طرف‌حساب، کالا یا فایل مانده افتتاحیه از انتخابگر بالای صفحه استفاده کنید. اگر این اطلاعات قبلاً وارد شده‌اند، مجدداً ثبت نکنید.</p>
+    </section>
+    <details style={{ ...card, padding: 18, marginBottom: 14 }}>
+      <summary style={{ cursor: "pointer", fontWeight: 700, color: "var(--erp-accent)" }}>ابزارهای پیشرفته مهاجرت و بازیابی اطلاعات قدیمی (اختیاری)</summary>
+      <p style={{ color: "var(--erp-muted)", fontSize: 13 }}>این ابزارها فقط برای پروژه‌های خاص تطبیق تاریخی هستند و برای شروع معمولی کسب‌وکار ضروری نیستند. از ثبت قطعی سند و موجودی افتتاحیه پیش از گرفتن بکاپ و تطبیق حساب‌ها خودداری کنید.</p>
+    <section style={{ ...card, padding: 18, marginBottom: 14 }}>
       <h2 style={{ marginTop: 0, fontSize: 19 }}>مرکز انتقال باقی‌مانده پاراسای — هایپر دکتر</h2>
       <p style={{ color: "var(--erp-muted)" }}>سه فایل اصلی قبلاً استخراج شده‌اند. ابتدا با کنترل جمع و تعداد خوانده و در جدول مستقل ذخیره می‌شوند؛ بدون افزایش موجودی، تغییر مانده مشتریان یا صدور سند جدید. ورود عملیاتی پس از تطبیق انبار، حساب‌ها و ۳۱۰۱ انجام می‌شود.</p>
       <div style={{border:"1px solid var(--erp-border)",borderRadius:12,padding:12,marginBottom:12}}>
@@ -449,6 +457,8 @@ export default function DataImportCenter() {
         ))}
       </div>
     </section>
+
+    </details>
 
     {entity === "existing_customer_opening" ? (
       <section style={{ ...card, padding: 18, marginBottom: 14 }}>
