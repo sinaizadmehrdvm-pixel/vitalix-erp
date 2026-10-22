@@ -2751,3 +2751,80 @@ async def quick_start_direct_bank_apply(request:Request,file:UploadFile=File(...
       "accounts_registered":created,"personal_contribution_excluded":1,
       "accounting_vouchers_created":0,"opening_bank_irr":check["real_bank_total_irr"],
       "needs_general_ledger_reconciliation":True,"repeat_import_blocked":True}
+
+
+# Cash opening is an independent starting balance, not a receipt/payment.
+# The sole balancing account is opening clearing; it must be reconciled
+# to the complete opening balance sheet before finance sign-off.
+def _quick_cash_opening_check(conn,company,amount_irr,cutoff):
+    from datetime import date
+    if amount_irr <= 0 or amount_irr > 10**14:
+        raise HTTPException(422,"Positive cash amount required")
+    try:
+        date.fromisoformat(cutoff)
+    except ValueError:
+        raise HTTPException(422,"YYYY-MM-DD cutoff required")
+    _ensure_posting_schema(conn)
+    conn.execute(text("""
+      CREATE TABLE IF NOT EXISTS quick_start_cash_openings(
+        company_id INTEGER PRIMARY KEY,amount_irr INTEGER NOT NULL,
+        voucher_id INTEGER NOT NULL,cutoff TEXT NOT NULL,created_at TEXT NOT NULL)
+    """))
+    previous=conn.execute(text(
+      "SELECT COUNT(*) FROM quick_start_cash_openings WHERE company_id=:company"
+    ),{"company":company}).scalar()
+    activity=conn.execute(text("""
+      SELECT COUNT(*) FROM accounting_voucher_lines l
+      JOIN accounting_vouchers v ON v.id=l.voucher_id
+      WHERE v.company_id=:company AND l.account_code='1101'
+    """),{"company":company}).scalar()
+    account_codes={x[0] for x in conn.execute(text(
+      "SELECT code FROM chart_accounts WHERE company_id=:company AND code IN ('1101','3101') AND is_active=1"
+    ),{"company":company}).all()}
+    problems=[]
+    if previous:problems.append("Cash opening already applied")
+    if activity:problems.append("Cash ledger already has entries; reconcile before opening")
+    if account_codes!={"1101","3101"}:problems.append("Cash or opening-clearing account missing")
+    return {"amount_irr":amount_irr,"cutoff":cutoff,
+       "previous_import":bool(previous),"cash_ledger_lines":int(activity),
+       "errors":problems,"can_apply":not problems,
+       "note":"Cash 1101 debit; opening clearing 3101 credit. No sales receipt or customer balance is changed."}
+
+
+@router.get("/quick-start/cash-opening/preview")
+def quick_start_cash_opening_preview(request:Request, amount_irr:int, cutoff:str):
+    _require_admin(request)
+    with engine.begin() as conn:
+        company=current_company_id(request)
+        details=_quick_cash_opening_check(conn,company,amount_irr,cutoff)
+    return {"company_id":company,**details,"no_changes":True}
+
+
+@router.post("/quick-start/cash-opening/apply")
+def quick_start_cash_opening_apply(request:Request,amount_irr:int,cutoff:str,confirm:str=""):
+    _require_admin(request)
+    if confirm!=f"POST_CASH_{amount_irr}_{cutoff}":
+        raise HTTPException(400,"Explicit date, amount and company confirmation required")
+    with engine.begin() as conn:
+        company=current_company_id(request)
+        details=_quick_cash_opening_check(conn,company,amount_irr,cutoff)
+        if not details["can_apply"]:
+            raise HTTPException(409,detail={"reason":"No changes applied",**details})
+        voucher_id=post_balanced_voucher(
+          "quick_start_cash_opening",None,
+          f"Cash opening {cutoff} (IRR); no historical receipt",
+          [
+           {"account_code":"1101","debit":amount_irr,"credit":0,
+            "description":f"Opening cash register {cutoff}"},
+           {"account_code":"3101","debit":0,"credit":amount_irr,
+            "description":"Opening clearing; reconcile with complete starting balance sheet"}
+          ],company,voucher_date=cutoff,connection=conn)
+        conn.execute(text("""
+          INSERT INTO quick_start_cash_openings
+            (company_id,amount_irr,voucher_id,cutoff,created_at)
+          VALUES(:company,:amount,:voucher,:cutoff,:now)
+        """),{"company":company,"amount":amount_irr,"cutoff":cutoff,"voucher":voucher_id,"now":_now()})
+    return {"status":"applied","company_id":company,"voucher_id":voucher_id,
+      "amount_irr":amount_irr,"cash_account":"1101","clearing_account":"3101",
+      "customer_balances_untouched":True,"new_receipts_created":0,
+      "needs_full_opening_balance_sheet_reconciliation":True}
