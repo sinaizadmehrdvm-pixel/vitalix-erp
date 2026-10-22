@@ -34,6 +34,7 @@ export default function DataImportCenter() {
   const [parasayPreviews, setParasayPreviews] = useState({});
   const [parasayStaged, setParasayStaged] = useState({});
   const [parasayBusy, setParasayBusy] = useState(false);
+  const [quickStartReport, setQuickStartReport] = useState(null);
   const [parasayPackage, setParasayPackage] = useState(null);
   const [parasayPackagePreview, setParasayPackagePreview] = useState(null);
   const [parasayStageStatus, setParasayStageStatus] = useState(null);
@@ -253,6 +254,14 @@ export default function DataImportCenter() {
     }catch(error){toast.error(error.message)}
     finally{setParasayBusy(false)}
   }
+  async function inspectQuickStart(){
+    try{
+      const res=await fetch(`${API_URL}/api/data-import/quick-start/readiness`,{headers:getAuthHeaders()});
+      const report=await res.json();
+      if(!res.ok)throw new Error(typeof report.detail==="string"?report.detail:"بررسی وضعیت امکان‌پذیر نیست");
+      setQuickStartReport(report);
+    }catch(e){toast.error(e.message)}
+  }
   async function inspectParasayStage() {
     setParasayBusy(true);
     try {
@@ -349,6 +358,12 @@ export default function DataImportCenter() {
       <h2 style={{ marginTop: 0, fontSize: 19 }}>شروع سریع کسب‌وکار</h2>
       <p style={{ marginBottom: 8, lineHeight: 1.9 }}>برای شروع کار، فقط اطلاعاتی را منتقل کنید که همین امروز لازم دارید: <strong>طرف‌حساب‌ها و مانده روز، کالاها و موجودی واقعی، مانده بانک و صندوق.</strong> از تاریخ شروع به بعد، چک‌ها، فاکتورها و رویدادهای جدید را در VITALIX ثبت کنید. انتقال تاریخچه قدیمی و کدینگ کامل نرم‌افزار قبلی اجباری نیست.</p>
       <p style={{ margin: 0, color: "var(--erp-muted)", fontSize: 13 }}>برای ورود طرف‌حساب، کالا یا فایل مانده افتتاحیه از انتخابگر بالای صفحه استفاده کنید. اگر این اطلاعات قبلاً وارد شده‌اند، مجدداً ثبت نکنید.</p>
+    <button type="button" onClick={inspectQuickStart} style={{marginTop:12,padding:"10px 14px",borderRadius:12,fontWeight:700}}>بررسی وضعیت واقعی شروع کار (بدون ثبت)</button>
+      {quickStartReport && <div style={{marginTop:12,display:"grid",gap:6,fontSize:14}}>
+        <div>طرف‌حساب: {pd(quickStartReport.customers)} | کالا: {pd(quickStartReport.products)} | کالا با موجودی عملیاتی: {pd(quickStartReport.products_with_operational_stock)} | حساب بانکی عملیاتی: {pd(quickStartReport.bank_accounts)}</div>
+        <div>مانده طرف‌حساب ثبت‌شده: {pd(quickStartReport.existing_customer_opening_batches)} دسته | موجودی فقط در فایل مبدأ: {pd(quickStartReport.legacy_inventory_source_rows)} ردیف | بانک فقط در فایل مبدأ: {pd(quickStartReport.legacy_bank_source_rows)} ردیف</div>
+        <p style={{margin:0,color:"var(--erp-muted)"}}>برای شروع، مانده روز بانک/صندوق و موجودی واقعی کالاها باید عملیاتی باشند؛ فایل قدیمی چک، کدینگ کامل و تاریخچه فاکتور الزامی نیست. این کنترل هیچ داده‌ای را تغییر نمی‌دهد.</p>
+      </div>}
     </section>
     <details style={{ ...card, padding: 18, marginBottom: 14 }}>
       <summary style={{ cursor: "pointer", fontWeight: 700, color: "var(--erp-accent)" }}>ابزارهای پیشرفته مهاجرت و بازیابی اطلاعات قدیمی (اختیاری)</summary>
