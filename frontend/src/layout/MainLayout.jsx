@@ -109,7 +109,7 @@ export default function MainLayout() {
         onCloseDrawer={() => closeNavigation({ restoreFocus: true })}
       />
 
-      <main id="main-content" className="erp-main" tabIndex={-1}>
+      <main id="main-content" className="erp-main erp-content-container" tabIndex={-1}>
         <OfflineStatusBanner />
         <AnimatePresence mode="wait" initial={false}>
           <motion.div
