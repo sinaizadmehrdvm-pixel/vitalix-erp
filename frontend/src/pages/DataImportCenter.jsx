@@ -35,6 +35,7 @@ export default function DataImportCenter() {
   const [parasayStaged, setParasayStaged] = useState({});
   const [parasayBusy, setParasayBusy] = useState(false);
   const [quickStartReport, setQuickStartReport] = useState(null);
+  const [stockPreflight, setStockPreflight] = useState(null);
   const [parasayPackage, setParasayPackage] = useState(null);
   const [parasayPackagePreview, setParasayPackagePreview] = useState(null);
   const [parasayStageStatus, setParasayStageStatus] = useState(null);
@@ -254,6 +255,14 @@ export default function DataImportCenter() {
     }catch(error){toast.error(error.message)}
     finally{setParasayBusy(false)}
   }
+  async function inspectQuickStartStock(){
+    try{
+      const res=await fetch(`${API_URL}/api/data-import/quick-start/stock-preview`,{headers:getAuthHeaders()});
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok)throw new Error(typeof data.detail==="string"?data.detail:"کنترل موجودی انجام نشد");
+      setStockPreflight(data);
+    }catch(error){toast.error(error.message)}
+  }
   async function inspectQuickStart(){
     try{
       const res=await fetch(`${API_URL}/api/data-import/quick-start/readiness`,{headers:getAuthHeaders()});
@@ -359,6 +368,12 @@ export default function DataImportCenter() {
       <p style={{ marginBottom: 8, lineHeight: 1.9 }}>برای شروع کار، فقط اطلاعاتی را منتقل کنید که همین امروز لازم دارید: <strong>طرف‌حساب‌ها و مانده روز، کالاها و موجودی واقعی، مانده بانک و صندوق.</strong> از تاریخ شروع به بعد، چک‌ها، فاکتورها و رویدادهای جدید را در VITALIX ثبت کنید. انتقال تاریخچه قدیمی و کدینگ کامل نرم‌افزار قبلی اجباری نیست.</p>
       <p style={{ margin: 0, color: "var(--erp-muted)", fontSize: 13 }}>برای ورود طرف‌حساب، کالا یا فایل مانده افتتاحیه از انتخابگر بالای صفحه استفاده کنید. اگر این اطلاعات قبلاً وارد شده‌اند، مجدداً ثبت نکنید.</p>
     <button type="button" onClick={inspectQuickStart} style={{marginTop:12,padding:"10px 14px",borderRadius:12,fontWeight:700}}>بررسی وضعیت واقعی شروع کار (بدون ثبت)</button>
+      <button type="button" onClick={inspectQuickStartStock} style={{marginTop:12,marginInlineStart:8,padding:"10px 14px",borderRadius:12,fontWeight:700}}>کنترل موجودی کالا قبل از انتقال (بدون ثبت)</button>
+      {stockPreflight && <div style={{padding:10,marginTop:10,borderRadius:10,border:"1px solid var(--erp-border)",fontSize:13}}>
+        <p>کالاهای منبع: {pd(stockPreflight.source_rows)} | تطبیق کد: {pd(stockPreflight.matched)} | دارای موجودی مثبت: {pd(stockPreflight.source_positive)} | دارای موجودی منفی: {pd(stockPreflight.source_negative.length)}</p>
+        <p>موجودی قبلی در VITALIX: {pd(stockPreflight.target_nonzero)} کالا | گردش قبلی انبار: {pd(stockPreflight.prior_movements)} | کدهای پیدا‌نشده: {pd(stockPreflight.missing_codes.length)}</p>
+        <p style={{color:"var(--erp-muted)"}}>این کنترل فقط می‌خواند. دو موجودی منفی قبل از ورود واقعی باید تعیین تکلیف شوند؛ هیچ سند حسابداری صادر نشده است.</p>
+      </div>}
       {quickStartReport && <div style={{marginTop:12,display:"grid",gap:6,fontSize:14}}>
         <div>طرف‌حساب: {pd(quickStartReport.customers)} | کالا: {pd(quickStartReport.products)} | کالا با موجودی عملیاتی: {pd(quickStartReport.products_with_operational_stock)} | حساب بانکی عملیاتی: {pd(quickStartReport.bank_accounts)}</div>
         <div>مانده طرف‌حساب ثبت‌شده: {pd(quickStartReport.existing_customer_opening_batches)} دسته | موجودی فقط در فایل مبدأ: {pd(quickStartReport.legacy_inventory_source_rows)} ردیف | بانک فقط در فایل مبدأ: {pd(quickStartReport.legacy_bank_source_rows)} ردیف</div>
