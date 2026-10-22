@@ -36,6 +36,8 @@ export default function DataImportCenter() {
   const [parasayBusy, setParasayBusy] = useState(false);
   const [quickStartReport, setQuickStartReport] = useState(null);
   const [stockPreflight, setStockPreflight] = useState(null);
+  const [directStockFile, setDirectStockFile] = useState(null);
+  const [directStockPreview, setDirectStockPreview] = useState(null);
   const [parasayPackage, setParasayPackage] = useState(null);
   const [parasayPackagePreview, setParasayPackagePreview] = useState(null);
   const [parasayStageStatus, setParasayStageStatus] = useState(null);
@@ -255,6 +257,22 @@ export default function DataImportCenter() {
     }catch(error){toast.error(error.message)}
     finally{setParasayBusy(false)}
   }
+  async function directStockAction(action){
+    if(!directStockFile)return toast.error("فایل موجودی را انتخاب کنید");
+    if(action==="apply" && (!directStockPreview?.can_import || !window.confirm(
+      "تنها موجودی مثبت کالاهای فعلی وارد می‌شود؛ دو موجودی منفی کنار گذاشته می‌شوند. هیچ سند مالی ایجاد نمی‌شود. بکاپ کامل تهیه شده است؟")))return;
+    setParasayBusy(true);
+    try{
+      const fd=new FormData();fd.append("file",directStockFile);
+      const headers=getAuthHeaders();delete headers["Content-Type"];delete headers["content-type"];
+      const res=await fetch(`${API_URL}/api/data-import/quick-start/direct-stock/${action}${action==="apply"?"?confirm=IMPORT_POSITIVE_STOCK_ONLY":""}`,{method:"POST",headers,body:fd});
+      const payload=await res.json().catch(()=>({}));
+      if(!res.ok)throw new Error(typeof payload.detail==="string"?payload.detail:JSON.stringify(payload.detail||"ثبت موجودی ناموفق بود"));
+      if(action==="preview")setDirectStockPreview(payload);
+      else{setDirectStockPreview(null);toast.success(`موجودی ${payload.stocked_products} کالا ثبت شد؛ موجودی منفی وارد نشد`);await inspectQuickStart();}
+    }catch(error){toast.error(error.message);}
+    finally{setParasayBusy(false);}
+  }
   async function inspectQuickStartStock(){
     try{
       const res=await fetch(`${API_URL}/api/data-import/quick-start/stock-preview`,{headers:getAuthHeaders()});
@@ -368,6 +386,21 @@ export default function DataImportCenter() {
       <p style={{ marginBottom: 8, lineHeight: 1.9 }}>برای شروع کار، فقط اطلاعاتی را منتقل کنید که همین امروز لازم دارید: <strong>طرف‌حساب‌ها و مانده روز، کالاها و موجودی واقعی، مانده بانک و صندوق.</strong> از تاریخ شروع به بعد، چک‌ها، فاکتورها و رویدادهای جدید را در VITALIX ثبت کنید. انتقال تاریخچه قدیمی و کدینگ کامل نرم‌افزار قبلی اجباری نیست.</p>
       <p style={{ margin: 0, color: "var(--erp-muted)", fontSize: 13 }}>برای ورود طرف‌حساب، کالا یا فایل مانده افتتاحیه از انتخابگر بالای صفحه استفاده کنید. اگر این اطلاعات قبلاً وارد شده‌اند، مجدداً ثبت نکنید.</p>
     <button type="button" onClick={inspectQuickStart} style={{marginTop:12,padding:"10px 14px",borderRadius:12,fontWeight:700}}>بررسی وضعیت واقعی شروع کار (بدون ثبت)</button>
+      <div style={{marginTop:14,padding:12,border:"1px solid var(--erp-border)",borderRadius:14}}>
+        <strong>ورود سریع موجودی کالاهای موجود — بدون فاکتور و سند حسابداری</strong>
+        <p style={{fontSize:13,color:"var(--erp-muted)"}}>فقط فایل موجودی CSV را انتخاب کن. برنامه کد کالاها را تطبیق می‌دهد؛ کالاهای با موجودی منفی در مرحله اول ثبت نمی‌شوند.</p>
+        <input type="file" accept=".csv,text/csv" onChange={e=>{setDirectStockFile(e.target.files?.[0]||null);setDirectStockPreview(null);}}/>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+          <button type="button" disabled={!directStockFile||parasayBusy} onClick={()=>directStockAction("preview")} style={{padding:10,borderRadius:10}}>بررسی فایل موجودی</button>
+          <button type="button" disabled={!directStockPreview?.can_import||parasayBusy} onClick={()=>directStockAction("apply")} style={{padding:10,borderRadius:10}}>ثبت فقط موجودی مثبت پس از تأیید</button>
+        </div>
+        {directStockPreview&&<div style={{fontSize:13,marginTop:10}}>
+          <p>ردیف: {pd(directStockPreview.rows)} | تطبیق: {pd(directStockPreview.matching)} |
+          موجودی مثبت: {pd(directStockPreview.positive)} | موجودی منفی مستثنی: {pd(directStockPreview.negative.length)}</p>
+          <p>مشکلات: {(directStockPreview.errors||[]).join("، ")||"موردی مشاهده نشد"} | موجودی قبلی: {pd(directStockPreview.operational_nonzero)}</p>
+          <p>توجه: موجودی منفی از گزارش خارج می‌شود؛ ارزش ریالی انبار هنوز باید جداگانه تطبیق داده شود.</p>
+        </div>}
+      </div>
       <button type="button" onClick={inspectQuickStartStock} style={{marginTop:12,marginInlineStart:8,padding:"10px 14px",borderRadius:12,fontWeight:700}}>کنترل موجودی کالا قبل از انتقال (بدون ثبت)</button>
       {stockPreflight && <div style={{padding:10,marginTop:10,borderRadius:10,border:"1px solid var(--erp-border)",fontSize:13}}>
         <p>کالاهای منبع: {pd(stockPreflight.source_rows)} | تطبیق کد: {pd(stockPreflight.matched)} | دارای موجودی مثبت: {pd(stockPreflight.source_positive)} | دارای موجودی منفی: {pd(stockPreflight.source_negative.length)}</p>
