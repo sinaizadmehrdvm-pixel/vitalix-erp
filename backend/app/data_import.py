@@ -2468,6 +2468,24 @@ def quick_start_readiness(request: Request):
             "no_changes_performed":True,
         }
 
+def _quick_stock_extract(raw):
+    """Accept a standalone source CSV or the already-supplied source ZIP."""
+    if raw[:2] == b"PK":
+        import zipfile
+        try:
+            with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+                candidates=[n for n in archive.namelist()
+                            if n.rsplit("/",1)[-1]=="PARASAY7_ALL_GOODS.csv"]
+                if len(candidates)!=1:
+                    raise HTTPException(422,"Exactly one inventory CSV is required in the ZIP")
+                if archive.getinfo(candidates[0]).file_size>MAX_BYTES:
+                    raise HTTPException(413,"Inventory CSV in ZIP too large")
+                return archive.read(candidates[0])
+        except (zipfile.BadZipFile,OSError) as exc:
+            raise HTTPException(422,"Invalid source ZIP") from exc
+    return raw
+
+
 # Quick-start source stock is separate from historical GL / cheques.
 @router.get("/quick-start/stock-preview")
 def quick_start_stock_preview(request: Request):
@@ -2506,3 +2524,230 @@ def quick_start_stock_preview(request: Request):
               and not duplicate and not negative and not existing_nonzero
               and not movement,
           "note":"Negative source quantities are not imported automatically. No accounting voucher is created."}
+
+
+# Direct current-stock import from an existing CSV, without requiring legacy
+# historical source staging, old cheque records, or chart of accounts.
+async def _quick_stock_source(file):
+    raw=await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:
+        raise HTTPException(413,"Stock file too large")
+    rows, summary=_parasay_stage_validate("inventory",_quick_stock_extract(raw))
+    return rows,summary
+
+
+def _quick_stock_check(conn, company, rows, allow_negative=False):
+    from decimal import Decimal
+    products=conn.execute(text(
+       "SELECT id,code,name,stock FROM products WHERE company_id=:company"
+    ),{"company":company}).mappings().all()
+    by_code={str(p["code"]):p for p in products}
+    source_codes=[str(row["Code"]) for row in rows]
+    missing=[c for c in source_codes if c not in by_code]
+    negatives=[{"code":str(row["Code"]),"quantity":str(row["NowAmount"])}
+               for row in rows if Decimal(str(row["NowAmount"] or 0))<0]
+    nonzero=sum(Decimal(str(p["stock"] or 0))!=0 for p in products)
+    movement=conn.execute(text("""
+       SELECT COUNT(*) FROM stock_movements sm JOIN products p ON p.id=sm.product_id
+       WHERE p.company_id=:company
+    """),{"company":company}).scalar()
+    conn.execute(text("""
+       CREATE TABLE IF NOT EXISTS quick_start_stock_imports(
+          company_id INTEGER PRIMARY KEY,source_fingerprint TEXT NOT NULL,
+          imported_count INTEGER NOT NULL,excluded_negative_count INTEGER NOT NULL,
+          created_at TEXT NOT NULL)
+    """))
+    previous=conn.execute(text(
+       "SELECT imported_count FROM quick_start_stock_imports WHERE company_id=:company"
+    ),{"company":company}).scalar()
+    errors=[]
+    if len(products)!=len(rows):errors.append("Product and source counts differ")
+    if len(by_code)!=len(products) or len(set(source_codes))!=len(source_codes):
+        errors.append("Duplicate product codes")
+    if missing:errors.append("Unknown product codes")
+    if nonzero:errors.append("Operational stock already exists")
+    if movement:errors.append("Warehouse movement already exists")
+    if previous is not None:errors.append("Opening stock was already imported")
+    if negatives and not allow_negative:errors.append("Negative source stock requires explicit skip")
+    return {"rows":len(rows),"matching":len(source_codes)-len(missing),
+      "positive":sum(Decimal(str(x["NowAmount"] or 0))>0 for x in rows),
+      "negative":negatives,"operational_nonzero":nonzero,"movement_count":int(movement),
+      "previous_import":previous is not None,"errors":errors,
+      "can_import":not errors}
+
+
+@router.post("/quick-start/direct-stock/preview")
+async def quick_start_direct_stock_preview(request:Request,file:UploadFile=File(...)):
+    _require_admin(request)
+    rows,summary=await _quick_stock_source(file)
+    with engine.begin() as conn:
+        company=current_company_id(request)
+        check=_quick_stock_check(conn,company,rows,allow_negative=True)
+    return {"company_id":company,**check,"skip_negative_required":bool(check["negative"]),
+       "quantity_total":summary["source_total"],"no_changes":True,
+       "warning":"Negative quantities will be skipped; valuation and opening GL must be reconciled separately."}
+
+
+@router.post("/quick-start/direct-stock/apply")
+async def quick_start_direct_stock_apply(request:Request,file:UploadFile=File(...),
+                                         confirm:str=""):
+    import hashlib
+    from decimal import Decimal
+    _require_admin(request)
+    if confirm!="IMPORT_POSITIVE_STOCK_ONLY":
+        raise HTTPException(400,"Explicit positive-stock-only confirmation required")
+    raw=await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:raise HTTPException(413,"Stock file too large")
+    rows,summary=_parasay_stage_validate("inventory",_quick_stock_extract(raw))
+    with engine.begin() as conn:
+        company=current_company_id(request)
+        check=_quick_stock_check(conn,company,rows,allow_negative=True)
+        if not check["can_import"]:
+            raise HTTPException(409,detail={"reason":"Import blocked, no changes",**check})
+        products={str(row["code"]):row for row in conn.execute(text(
+            "SELECT id,code,name FROM products WHERE company_id=:company"
+        ),{"company":company}).mappings()}
+        now=_now()
+        applied=0
+        for item in rows:
+            qty=Decimal(str(item["NowAmount"] or 0))
+            if qty<=0:continue
+            product=products[str(item["Code"])]
+            updated=conn.execute(text("""
+                UPDATE products SET stock=:quantity
+                WHERE company_id=:company AND id=:id AND COALESCE(stock,0)=0
+            """),{"quantity":float(qty),"company":company,"id":product["id"]})
+            if updated.rowcount!=1:
+                raise HTTPException(409,"Concurrent stock change; import rolled back")
+            conn.execute(text("""
+                INSERT INTO stock_movements
+                  (warehouse,product_id,product_name,quantity,movement_type,
+                   movement_date,note,created_at,warehouse_id)
+                VALUES(:warehouse,:id,:name,:qty,'opening_import',
+                       :day,:note,:now,NULL)
+            """),{"warehouse":DEFAULT_WAREHOUSE_NAME,"id":product["id"],
+                  "name":product["name"],"qty":float(qty),
+                  "day":date_cls.today().isoformat(),
+                  "note":"Current stock only; no GL entry, historical cheque or invoice import",
+                  "now":now})
+            applied+=1
+        conn.execute(text("""
+            INSERT INTO quick_start_stock_imports
+              (company_id,source_fingerprint,imported_count,excluded_negative_count,created_at)
+            VALUES(:company,:fingerprint,:count,:excluded,:now)
+        """),{"company":company,"fingerprint":hashlib.sha256(raw).hexdigest(),
+              "count":applied,"excluded":len(check["negative"]),"now":now})
+    return {"status":"applied","company_id":company,"stocked_products":applied,
+       "negative_rows_skipped":check["negative"],"customer_balances_untouched":True,
+       "accounting_vouchers_created":0,"repeat_import_blocked":True}
+
+
+def _quick_bank_extract(raw):
+    if raw[:2]!=b"PK":
+        return raw
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(raw)) as archive:
+            candidates=[n for n in archive.namelist()
+                if n.rsplit("/",1)[-1]=="PARASAY_Bank_Final_Balances.csv"]
+            if len(candidates)!=1:
+                raise HTTPException(422,"Exactly one bank balances CSV required")
+            if archive.getinfo(candidates[0]).file_size>MAX_BYTES:
+                raise HTTPException(413,"Bank file in ZIP too large")
+            return archive.read(candidates[0])
+    except (zipfile.BadZipFile,OSError) as exc:
+        raise HTTPException(422,"Invalid source ZIP") from exc
+
+
+def _quick_bank_checks(conn,company,rows):
+    from decimal import Decimal
+    from app.accounting.bank_reconciliation import _ensure_schema
+    _ensure_schema(conn)
+    conn.execute(text("""
+      CREATE TABLE IF NOT EXISTS quick_start_bank_imports (
+         company_id INTEGER PRIMARY KEY,
+         source_fingerprint TEXT NOT NULL,
+         created_count INTEGER NOT NULL,
+         excluded_count INTEGER NOT NULL,
+         created_at TEXT NOT NULL)
+    """))
+    existing=conn.execute(text(
+       "SELECT COUNT(*) FROM bank_accounts WHERE company_id=:company"
+    ),{"company":company}).scalar()
+    previous=conn.execute(text(
+       "SELECT COUNT(*) FROM quick_start_bank_imports WHERE company_id=:company"
+    ),{"company":company}).scalar()
+    # Account 7579 is explicitly labelled personal contribution, not real bank cash.
+    exclusions=[row for row in rows if str(row["BankAccountID"])=="7579"
+                and "آورده" in row["BankName"]]
+    bank=[row for row in rows if row not in exclusions]
+    ledger=conn.execute(text("""
+       SELECT COUNT(*) FROM chart_accounts
+       WHERE company_id=:company AND code='1102' AND account_type='asset'
+    """),{"company":company}).scalar()
+    problems=[]
+    if len(rows)!=18 or len(bank)!=17 or len(exclusions)!=1:
+        problems.append("Personal-contribution bank row cannot be identified safely")
+    if existing: problems.append("Operational bank accounts already exist")
+    if previous: problems.append("This opening-bank import has already been applied")
+    if not ledger: problems.append("Asset bank ledger account 1102 is missing")
+    return {"source_rows":len(rows),"real_bank_accounts":len(bank),
+      "personal_excluded":len(exclusions),"existing_operational_accounts":int(existing),
+      "previous_import":bool(previous),"errors":problems,"can_import":not problems,
+      "real_bank_total_irr":str(sum((Decimal(row["NetBalance"]) for row in bank),Decimal(0))),
+      "personal_excluded_irr":str(sum((Decimal(row["NetBalance"]) for row in exclusions),Decimal(0)))}
+
+
+@router.post("/quick-start/direct-banks/preview")
+async def quick_start_direct_bank_preview(request:Request,file:UploadFile=File(...)):
+    _require_admin(request)
+    raw=await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:raise HTTPException(413,"File too large")
+    rows,_=_parasay_stage_validate("banks",_quick_bank_extract(raw))
+    with engine.begin() as conn:
+        company=current_company_id(request)
+        check=_quick_bank_checks(conn,company,rows)
+    return {"company_id":company,**check,"no_changes":True,
+      "warning":"Bank opening balances in the bank register only, no GL voucher. Personal contribution excluded."}
+
+
+@router.post("/quick-start/direct-banks/apply")
+async def quick_start_direct_bank_apply(request:Request,file:UploadFile=File(...),
+                                       confirm:str=""):
+    import hashlib
+    from decimal import Decimal
+    _require_admin(request)
+    if confirm!="REGISTER_REAL_BANKS_NO_GL":
+        raise HTTPException(400,"Explicit bank-register-only confirmation required")
+    raw=await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:raise HTTPException(413,"File too large")
+    rows,_=_parasay_stage_validate("banks",_quick_bank_extract(raw))
+    with engine.begin() as conn:
+        company=current_company_id(request)
+        check=_quick_bank_checks(conn,company,rows)
+        if not check["can_import"]:
+            raise HTTPException(409,detail={"reason":"No financial changes",**check})
+        now=_now()
+        created=0
+        for bank in rows:
+            if str(bank["BankAccountID"])=="7579":
+                continue
+            conn.execute(text("""
+               INSERT INTO bank_accounts
+                 (name,bank_name,account_number,iban,ledger_account_code,
+                 opening_balance,active,created_at,company_id)
+               VALUES(:name,:bank,'','','1102',:opening,1,:now,:company)
+            """),{"name":bank["BankName"],"bank":bank["BankName"],
+                 "opening":float(Decimal(bank["NetBalance"])),
+                 "now":now,"company":company})
+            created+=1
+        conn.execute(text("""
+          INSERT INTO quick_start_bank_imports
+            (company_id,source_fingerprint,created_count,excluded_count,created_at)
+          VALUES(:company,:fingerprint,:count,1,:now)
+        """),{"company":company,"fingerprint":hashlib.sha256(raw).hexdigest(),
+              "count":created,"now":now})
+    return {"status":"applied","company_id":company,
+      "accounts_registered":created,"personal_contribution_excluded":1,
+      "accounting_vouchers_created":0,"opening_bank_irr":check["real_bank_total_irr"],
+      "needs_general_ledger_reconciliation":True,"repeat_import_blocked":True}
