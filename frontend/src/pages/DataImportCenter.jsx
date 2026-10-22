@@ -38,6 +38,7 @@ export default function DataImportCenter() {
   const [stockPreflight, setStockPreflight] = useState(null);
   const [directStockFile, setDirectStockFile] = useState(null);
   const [directStockPreview, setDirectStockPreview] = useState(null);
+  const [directBankPreview, setDirectBankPreview] = useState(null);
   const [parasayPackage, setParasayPackage] = useState(null);
   const [parasayPackagePreview, setParasayPackagePreview] = useState(null);
   const [parasayStageStatus, setParasayStageStatus] = useState(null);
@@ -273,6 +274,21 @@ export default function DataImportCenter() {
     }catch(error){toast.error(error.message);}
     finally{setParasayBusy(false);}
   }
+  async function directBanksAction(action){
+    if(!directStockFile)return toast.error("همان فایل ZIP را انتخاب کنید");
+    if(action==="apply" && (!directBankPreview?.can_import || !window.confirm("۱۷ حساب بانکی واقعی با مانده روز ثبت می‌شوند؛ آورده شخصی وارد بانک نمی‌شود و سند حسابداری ثبت نمی‌شود. تأیید؟")))return;
+    setParasayBusy(true);
+    try{
+      const fd=new FormData();fd.append("file",directStockFile);
+      const headers=getAuthHeaders();delete headers["Content-Type"];delete headers["content-type"];
+      const res=await fetch(`${API_URL}/api/data-import/quick-start/direct-banks/${action}${action==="apply"?"?confirm=REGISTER_REAL_BANKS_NO_GL":""}`,{method:"POST",headers,body:fd});
+      const payload=await res.json().catch(()=>({}));
+      if(!res.ok)throw new Error(typeof payload.detail==="string"?payload.detail:JSON.stringify(payload.detail||"خطا در بررسی مانده بانک"));
+      if(action==="preview")setDirectBankPreview(payload);
+      else{setDirectBankPreview(null);toast.success(`${payload.accounts_registered} حساب بانکی ثبت شد؛ سند حسابداری صادر نشد`);await inspectQuickStart();}
+    }catch(error){toast.error(error.message)}
+    finally{setParasayBusy(false)}
+  }
   async function inspectQuickStartStock(){
     try{
       const res=await fetch(`${API_URL}/api/data-import/quick-start/stock-preview`,{headers:getAuthHeaders()});
@@ -399,6 +415,20 @@ export default function DataImportCenter() {
           موجودی مثبت: {pd(directStockPreview.positive)} | موجودی منفی مستثنی: {pd(directStockPreview.negative.length)}</p>
           <p>مشکلات: {(directStockPreview.errors||[]).join("، ")||"موردی مشاهده نشد"} | موجودی قبلی: {pd(directStockPreview.operational_nonzero)}</p>
           <p>توجه: موجودی منفی از گزارش خارج می‌شود؛ ارزش ریالی انبار هنوز باید جداگانه تطبیق داده شود.</p>
+        </div>}
+      </div>
+      <div style={{marginTop:14,padding:12,border:"1px solid var(--erp-border)",borderRadius:14}}>
+        <strong>ثبت مانده حساب‌های بانکی — همان فایل ZIP</strong>
+        <p style={{fontSize:13,color:"var(--erp-muted)"}}>نیازی به انتخاب دوباره فایل نیست. حساب شخصیِ «آورده» از فهرست بانک‌ها کنار گذاشته می‌شود. ثبت در دفتر کل به بررسی حسابداری جداگانه نیاز دارد.</p>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+          <button type="button" disabled={!directStockFile||parasayBusy} onClick={()=>directBanksAction("preview")} style={{padding:10,borderRadius:10}}>بررسی مانده‌های بانک</button>
+          <button type="button" disabled={!directBankPreview?.can_import||parasayBusy} onClick={()=>directBanksAction("apply")} style={{padding:10,borderRadius:10}}>ثبت حساب‌های واقعی بدون سند مالی</button>
+        </div>
+        {directBankPreview&&<div style={{fontSize:13,marginTop:10}}>
+          <p>حساب‌های واقعی: {pd(directBankPreview.real_bank_accounts)} | موارد غیر بانکی کنارگذاشته‌شده: {pd(directBankPreview.personal_excluded)}</p>
+          <p>جمع مانده بانک‌های واقعی: {pd(directBankPreview.real_bank_total_irr)} ریال</p>
+          <p>وضعیت: {(directBankPreview.errors||[]).join("، ")||"موردی مشاهده نشد"}</p>
+          <p>این کار سند تراز افتتاحیه نمی‌سازد؛ مانده صندوق و دفتر کل باید جداگانه تطبیق شوند.</p>
         </div>}
       </div>
       <button type="button" onClick={inspectQuickStartStock} style={{marginTop:12,marginInlineStart:8,padding:"10px 14px",borderRadius:12,fontWeight:700}}>کنترل موجودی کالا قبل از انتقال (بدون ثبت)</button>
