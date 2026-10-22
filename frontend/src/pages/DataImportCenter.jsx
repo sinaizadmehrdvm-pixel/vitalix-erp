@@ -425,6 +425,8 @@ export default function DataImportCenter() {
           {kind: "inventory", title: "موجودی ۱٬۴۹۰ کالا / ۴۴۰ دارای موجودی", file: "PARASAY7_ALL_GOODS.csv"},
           {kind: "banks", title: "۱۸ حساب بانکی", file: "PARASAY_Bank_Final_Balances.csv"},
           {kind: "gl_residual", title: "۲۸۳ حساب معین / ۱۲ مانده غیرصفر", file: "PARASAY_Other_Accounts_1405-07-29.csv"},
+          {kind: "chart_total", title: "۴۳ حساب کل", file: "PARASAY_TotalBookAccounts.csv"},
+          {kind: "chart_moien", title: "۲۸۳ کدینگ معین", file: "PARASAY_MoienBookAccounts.csv"},
         ].map(item => (
           <div key={item.kind} style={{ border: "1px solid var(--erp-border)", borderRadius: 14, padding: 12, minWidth: 0 }}>
             <h3 style={{ margin: "0 0 8px", fontSize: 15 }}>{item.title}</h3>
