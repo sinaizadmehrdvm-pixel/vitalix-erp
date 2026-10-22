@@ -37,6 +37,9 @@ export default function DataImportCenter() {
   const [parasayPackage, setParasayPackage] = useState(null);
   const [parasayPackagePreview, setParasayPackagePreview] = useState(null);
   const [parasayPackageApplied, setParasayPackageApplied] = useState(false);
+  const [parasayFinalReview, setParasayFinalReview] = useState(null);
+  const [parasayNegativeAcknowledged, setParasayNegativeAcknowledged] = useState(false);
+  const [parasayPersonalAcknowledged, setParasayPersonalAcknowledged] = useState(false);
   const [openingDate, setOpeningDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [preview, setPreview] = useState(null);
   const [customerOpeningPreview, setCustomerOpeningPreview] = useState(null);
@@ -210,6 +213,45 @@ export default function DataImportCenter() {
     } catch (error) { toast.error(error.message); }
     finally { setBusy(false); }
   }
+  async function parasayFinalizeRequest(path, method="GET") {
+    const response=await fetch(`${API_URL}/api/data-import/parasay-finalize/${path}`, {
+      method, headers:getAuthHeaders(),
+    });
+    const result=await response.json().catch(()=>({}));
+    if(!response.ok)throw new Error(typeof result.detail==="string"?result.detail:"خطا در کنترل افتتاحیه پاراسای");
+    return result;
+  }
+  async function reviewParasayFinal(){
+    setParasayBusy(true);
+    try{
+      const report=await parasayFinalizeRequest("preview");
+      setParasayFinalReview(report);
+      toast.success("کنترل اطلاعات و مانده‌ها انجام شد");
+    }catch(error){toast.error(error.message)}
+    finally{setParasayBusy(false)}
+  }
+  async function finalizeParasayChart(){
+    if(!parasayFinalReview||parasayFinalReview.chart_finalized)return;
+    if(!window.confirm("کدینگ ۴۳ کل و ۲۸۳ معین پاراسای با شناسه یکتای مبدأ ایجاد شود؟ هیچ سند مالی ثبت نمی‌شود."))return;
+    setParasayBusy(true);
+    try{
+      const result=await parasayFinalizeRequest("chart?confirm=CREATE_PARASAY_CHART_BY_SOURCE_ID","POST");
+      toast.success(`${result.chart_accounts_created} حساب با کد یکتا ایجاد شد`);
+      const report=await parasayFinalizeRequest("preview");setParasayFinalReview(report);
+    }catch(error){toast.error(error.message)}
+    finally{setParasayBusy(false)}
+  }
+  async function finalizeParasayOpening(){
+    if(!parasayFinalReview?.can_finalize||!parasayNegativeAcknowledged||!parasayPersonalAcknowledged)return;
+    if(!window.confirm("ثبت قطعی و غیرقابل‌تکرار: موجودی ۴۴۰ کالا، شامل دو موجودی منفی مبدأ، و سند مانده ۱۲ معین با تسویه دقیق ۳۱۰۱. آیا بکاپ پایگاه داده را گرفته‌اید و ادامه را تأیید می‌کنید؟"))return;
+    setParasayBusy(true);
+    try{
+      const result=await parasayFinalizeRequest("opening?confirm=APPLY_PARASAY_STOCK_GL_14050729&accept_source_negative_stock=true&acknowledge_bank_7579=true","POST");
+      toast.success(`موجودی ${result.stock_updated} کالا و ${result.gl_lines} ردیف افتتاحیه ثبت شد`);
+      const report=await parasayFinalizeRequest("preview");setParasayFinalReview(report);
+    }catch(error){toast.error(error.message)}
+    finally{setParasayBusy(false)}
+  }
   async function parasayPackageAction(action) {
     if (!parasayPackage) return toast.error("ابتدا بسته ZIP را انتخاب کنید");
     if (action === "apply") {
@@ -311,6 +353,43 @@ export default function DataImportCenter() {
           {!parasayPackagePreview.can_apply&&" | این بسته یا بخشی از آن قبلاً ذخیره شده؛ ثبت مجدد مسدود است."}
         </p>}
         {parasayPackageApplied&&<p style={{color:"var(--erp-success)"}}>شش مجموعه در شرکت هایپر دکتر ذخیره شدند؛ ثبت حسابداری و موجودی صفر است.</p>}
+      </div>
+      <div style={{padding:14,border:"1px solid var(--erp-border)",borderRadius:14,marginBottom:16}}>
+        <h3 style={{margin:"0 0 8px"}}>کنترل و ثبت قطعی افتتاحیه — مرحله جداگانه پس از بارگذاری بسته</h3>
+        <button type="button" onClick={reviewParasayFinal} disabled={parasayBusy} style={{padding:"10px 14px",borderRadius:10,fontWeight:700}}>کنترل ارتباط حساب‌ها، موجودی‌ها و سند افتتاحیه</button>
+        {parasayFinalReview&&<div style={{marginTop:12}}>
+          <p style={{fontSize:13}}>کدینگ: {pd(parasayFinalReview.source_total_accounts)} کل + {pd(parasayFinalReview.source_moien_accounts)} معین |
+            کالاهای مطابق: {pd(parasayFinalReview.matched_products)} |
+            جمع تعداد کالا: {pd(parasayFinalReview.product_total_quantity)} |
+            حساب‌های بانک: {pd(parasayFinalReview.bank_accounts)} |
+            مانده سایر معین‌ها: {pd(parasayFinalReview.residual_net_irr)} ریال |
+            چک‌های ثبت‌شده در فهرست اولیه: {pd(parasayFinalReview.cheques_staged)}</p>
+          <p style={{fontSize:13,color:"var(--erp-warning)"}}>
+            ارزش انبار در دفتر معین پاراسای: {pd(parasayFinalReview.source_gl_inventory_irr)} ریال |
+            حاصل تعداد × میانگین خرید کالاها: {pd(parasayFinalReview.source_stock_buyavg_irr)} ریال |
+            اختلاف ارزشی نیازمند بررسی: {pd(parasayFinalReview.source_stock_valuation_gap_irr)} ریال.
+            انتقال، مبلغ دفتر را جدا از مقادیر فیزیکی عیناً حفظ می‌کند؛ اختلاف بهای هر کالا را خودکار اصلاح نمی‌کند.
+          </p>
+          <p style={{fontSize:13,color:"var(--erp-warning)"}}>دو کالای دارای موجودی منفی مبدأ و حساب ۷۵۷۹ با عنوان آورده شخصی باید آگاهانه بررسی شوند. تطبیق ارزش انبار به تفکیک کالا هنوز مستقل از تراز کل است.</p>
+          {(parasayFinalReview.blockers||[]).map((block,idx)=><p key={idx} style={{fontSize:13,color:"var(--erp-danger)"}}>• {block}</p>)}
+          {!parasayFinalReview.chart_finalized ? <button type="button" disabled={parasayBusy} onClick={finalizeParasayChart} style={{padding:"9px 12px",borderRadius:10,fontWeight:700}}>ثبت کدینگ ۳۲۶ حساب براساس شناسه پاراسای (بدون سند)</button>
+          : <p style={{color:"var(--erp-success)",fontSize:13}}>کدینگ مبدأ قبلاً وارد شده است.</p>}
+          {!parasayFinalReview.opening_finalized&&<div style={{display:"grid",gap:8,marginTop:12}}>
+            <label style={{display:"flex",gap:8,alignItems:"start",fontSize:13}}>
+              <input type="checkbox" checked={parasayNegativeAcknowledged} onChange={e=>setParasayNegativeAcknowledged(e.target.checked)}/>
+              دو موجودی منفی منبع را بررسی کردم و می‌خواهم عیناً منتقل شوند.
+            </label>
+            <label style={{display:"flex",gap:8,alignItems:"start",fontSize:13}}>
+              <input type="checkbox" checked={parasayPersonalAcknowledged} onChange={e=>setParasayPersonalAcknowledged(e.target.checked)}/>
+              حساب پاراسای ۷۵۷۹ «آورده شخصی» را در گردش بانکی مبدأ بررسی کرده‌ام.
+            </label>
+            <button type="button" disabled={parasayBusy||!parasayFinalReview.can_finalize||!parasayNegativeAcknowledged||!parasayPersonalAcknowledged}
+              onClick={finalizeParasayOpening} style={{padding:"10px 14px",borderRadius:10,fontWeight:700}}>
+              ثبت اتمیک موجودی و سند افتتاحیه (نیازمند بکاپ و تأیید)
+            </button>
+          </div>}
+          {parasayFinalReview.opening_finalized&&<p style={{color:"var(--erp-success)"}}>سند افتتاحیه و موجودی کالا قبلاً ثبت شده‌اند؛ اجرای مجدد مسدود است.</p>}
+        </div>}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(265px,1fr))", gap: 12 }}>
         {[
