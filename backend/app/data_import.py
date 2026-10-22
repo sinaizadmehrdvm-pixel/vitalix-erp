@@ -2506,3 +2506,119 @@ def quick_start_stock_preview(request: Request):
               and not duplicate and not negative and not existing_nonzero
               and not movement,
           "note":"Negative source quantities are not imported automatically. No accounting voucher is created."}
+
+
+# Direct current-stock import from an existing CSV, without requiring legacy
+# historical source staging, old cheque records, or chart of accounts.
+async def _quick_stock_source(file):
+    raw=await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:
+        raise HTTPException(413,"Stock file too large")
+    rows, summary=_parasay_stage_validate("inventory",raw)
+    return rows,summary
+
+
+def _quick_stock_check(conn, company, rows, allow_negative=False):
+    from decimal import Decimal
+    products=conn.execute(text(
+       "SELECT id,code,name,stock FROM products WHERE company_id=:company"
+    ),{"company":company}).mappings().all()
+    by_code={str(p["code"]):p for p in products}
+    source_codes=[str(row["Code"]) for row in rows]
+    missing=[c for c in source_codes if c not in by_code]
+    negatives=[{"code":str(row["Code"]),"quantity":str(row["NowAmount"])}
+               for row in rows if Decimal(str(row["NowAmount"] or 0))<0]
+    nonzero=sum(Decimal(str(p["stock"] or 0))!=0 for p in products)
+    movement=conn.execute(text("""
+       SELECT COUNT(*) FROM stock_movements sm JOIN products p ON p.id=sm.product_id
+       WHERE p.company_id=:company
+    """),{"company":company}).scalar()
+    conn.execute(text("""
+       CREATE TABLE IF NOT EXISTS quick_start_stock_imports(
+          company_id INTEGER PRIMARY KEY,source_fingerprint TEXT NOT NULL,
+          imported_count INTEGER NOT NULL,excluded_negative_count INTEGER NOT NULL,
+          created_at TEXT NOT NULL)
+    """))
+    previous=conn.execute(text(
+       "SELECT imported_count FROM quick_start_stock_imports WHERE company_id=:company"
+    ),{"company":company}).scalar()
+    errors=[]
+    if len(products)!=len(rows):errors.append("Product and source counts differ")
+    if len(by_code)!=len(products) or len(set(source_codes))!=len(source_codes):
+        errors.append("Duplicate product codes")
+    if missing:errors.append("Unknown product codes")
+    if nonzero:errors.append("Operational stock already exists")
+    if movement:errors.append("Warehouse movement already exists")
+    if previous is not None:errors.append("Opening stock was already imported")
+    if negatives and not allow_negative:errors.append("Negative source stock requires explicit skip")
+    return {"rows":len(rows),"matching":len(source_codes)-len(missing),
+      "positive":sum(Decimal(str(x["NowAmount"] or 0))>0 for x in rows),
+      "negative":negatives,"operational_nonzero":nonzero,"movement_count":int(movement),
+      "previous_import":previous is not None,"errors":errors,
+      "can_import":not errors}
+
+
+@router.post("/quick-start/direct-stock/preview")
+async def quick_start_direct_stock_preview(request:Request,file:UploadFile=File(...)):
+    _require_admin(request)
+    rows,summary=await _quick_stock_source(file)
+    with engine.begin() as conn:
+        company=current_company_id(request)
+        check=_quick_stock_check(conn,company,rows,allow_negative=True)
+    return {"company_id":company,**check,"skip_negative_required":bool(check["negative"]),
+       "quantity_total":summary["source_total"],"no_changes":True,
+       "warning":"Negative quantities will be skipped; valuation and opening GL must be reconciled separately."}
+
+
+@router.post("/quick-start/direct-stock/apply")
+async def quick_start_direct_stock_apply(request:Request,file:UploadFile=File(...),
+                                         confirm:str=""):
+    import hashlib
+    from decimal import Decimal
+    _require_admin(request)
+    if confirm!="IMPORT_POSITIVE_STOCK_ONLY":
+        raise HTTPException(400,"Explicit positive-stock-only confirmation required")
+    raw=await file.read(MAX_BYTES+1)
+    if len(raw)>MAX_BYTES:raise HTTPException(413,"Stock file too large")
+    rows,summary=_parasay_stage_validate("inventory",raw)
+    with engine.begin() as conn:
+        company=current_company_id(request)
+        check=_quick_stock_check(conn,company,rows,allow_negative=True)
+        if not check["can_import"]:
+            raise HTTPException(409,detail={"reason":"Import blocked, no changes",**check})
+        products={str(row["code"]):row for row in conn.execute(text(
+            "SELECT id,code,name FROM products WHERE company_id=:company"
+        ),{"company":company}).mappings()}
+        now=_now()
+        applied=0
+        for item in rows:
+            qty=Decimal(str(item["NowAmount"] or 0))
+            if qty<=0:continue
+            product=products[str(item["Code"])]
+            updated=conn.execute(text("""
+                UPDATE products SET stock=:quantity
+                WHERE company_id=:company AND id=:id AND COALESCE(stock,0)=0
+            """),{"quantity":float(qty),"company":company,"id":product["id"]})
+            if updated.rowcount!=1:
+                raise HTTPException(409,"Concurrent stock change; import rolled back")
+            conn.execute(text("""
+                INSERT INTO stock_movements
+                  (warehouse,product_id,product_name,quantity,movement_type,
+                   movement_date,note,created_at,warehouse_id)
+                VALUES(:warehouse,:id,:name,:qty,'opening_import',
+                       :day,:note,:now,NULL)
+            """),{"warehouse":DEFAULT_WAREHOUSE_NAME,"id":product["id"],
+                  "name":product["name"],"qty":float(qty),
+                  "day":date_cls.today().isoformat(),
+                  "note":"Current stock only; no GL entry, historical cheque or invoice import",
+                  "now":now})
+            applied+=1
+        conn.execute(text("""
+            INSERT INTO quick_start_stock_imports
+              (company_id,source_fingerprint,imported_count,excluded_negative_count,created_at)
+            VALUES(:company,:fingerprint,:count,:excluded,:now)
+        """),{"company":company,"fingerprint":hashlib.sha256(raw).hexdigest(),
+              "count":applied,"excluded":len(check["negative"]),"now":now})
+    return {"status":"applied","company_id":company,"stocked_products":applied,
+       "negative_rows_skipped":check["negative"],"customer_balances_untouched":True,
+       "accounting_vouchers_created":0,"repeat_import_blocked":True}
