@@ -47,7 +47,7 @@ class ParasayFinalizeTests(unittest.TestCase):
                     "AccountName":"معین","TotalBookID":"100"} for i in range(1,284)]
             goods=[{"ID":str(i),"Code":str(i),"NowAmount":str(-1 if i in (1,2) else
                         19585 if i==3 else 1 if i<=440 else 0)} for i in range(1,1491)]
-            banks=[{"BankAccountID":str(i),"NetBalance":str(22036831119 if i==1 else 1)}
+            banks=[{"BankAccountID":str(i),"BankName":"بانک "+str(i),"NetBalance":str(22036831119 if i==1 else 1)}
                    for i in range(1,19)]
             amounts={104:22036831136,117:3509040000,130:56508836736,193:-26415000000}
             amounts.update({i:1 for i in range(1,8)})
