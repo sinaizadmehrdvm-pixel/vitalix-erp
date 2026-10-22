@@ -2415,3 +2415,55 @@ def finalize_parasay_stock_and_ledger(request: Request,
             "customer_opening_untouched":True,
             "cheque_staging_untouched":True,
             "bank_accounts_registered":18,"bank_account_7579_personal_label_reviewed":True}
+
+
+@router.get("/quick-start/readiness")
+def quick_start_readiness(request: Request):
+    """Read-only, company-scoped operational readiness for any industry.
+
+    Does not require source ERP, legacy chart of accounts, cheque history,
+    invoices, or a specific business name. Never mutates accounting data.
+    """
+    _require_admin(request)
+    company = current_company_id(request)
+    with engine.connect() as conn:
+        def table_exists(name):
+            return bool(conn.execute(text(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name=:name"
+            ), {"name": name}).scalar())
+        customer_count = conn.execute(text(
+            "SELECT COUNT(*) FROM customers WHERE company_id=:company"
+        ), {"company": company}).scalar() if table_exists("customers") else 0
+        product = conn.execute(text("""
+            SELECT COUNT(*) AS total,
+                   COALESCE(SUM(CASE WHEN ABS(COALESCE(stock,0))>0.00001 THEN 1 ELSE 0 END),0) AS stocked
+            FROM products WHERE company_id=:company
+        """), {"company": company}).mappings().first() if table_exists("products") else None
+        bank_count = conn.execute(text(
+            "SELECT COUNT(*) FROM bank_accounts WHERE company_id=:company"
+        ), {"company": company}).scalar() if table_exists("bank_accounts") else 0
+        customer_opening_count = conn.execute(text("""
+            SELECT COUNT(*) FROM data_import_batches
+            WHERE company_id=:company AND entity_type='existing_customer_opening'
+              AND status='applied'
+        """), {"company":company}).scalar() if table_exists("data_import_batches") else 0
+        source_counts = {}
+        if table_exists("parasay_migration_staging"):
+            source_counts = {row["kind"]:row["total"] for row in conn.execute(text("""
+                SELECT kind,COUNT(*) AS total FROM parasay_migration_staging
+                WHERE company_id=:company GROUP BY kind
+            """), {"company":company}).mappings()}
+        return {
+            "company_id":company,
+            "customers":int(customer_count or 0),
+            "products":int((product or {}).get("total",0)),
+            "products_with_operational_stock":int((product or {}).get("stocked",0)),
+            "bank_accounts":int(bank_count or 0),
+            "existing_customer_opening_batches":int(customer_opening_count or 0),
+            "legacy_inventory_source_rows":int(source_counts.get("inventory",0)),
+            "legacy_bank_source_rows":int(source_counts.get("banks",0)),
+            "ready_for_business_transactions": bool(customer_count and product and product["total"]
+                and product["stocked"] and bank_count),
+            "note":"Legacy source staging is not operational stock or a bank account. A bank account alone does not verify its cash balance. Existing customer openings are not imported twice.",
+            "no_changes_performed":True,
+        }
