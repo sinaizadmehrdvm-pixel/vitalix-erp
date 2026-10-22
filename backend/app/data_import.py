@@ -2557,8 +2557,6 @@ def _quick_stock_check(conn, company, rows, allow_negative=False):
           imported_count INTEGER NOT NULL,excluded_negative_count INTEGER NOT NULL,
           created_at TEXT NOT NULL)
     """))
-    if amount_irr <= 0 or amount_irr > 10**14 or not __import__("re").fullmatch(r"\\d{4}-\\d{2}-\\d{2}",cutoff):
-        raise HTTPException(422,"Positive cash amount and YYYY-MM-DD cutoff required")
     previous=conn.execute(text(
        "SELECT imported_count FROM quick_start_stock_imports WHERE company_id=:company"
     ),{"company":company}).scalar()
@@ -2759,6 +2757,13 @@ async def quick_start_direct_bank_apply(request:Request,file:UploadFile=File(...
 # The sole balancing account is opening clearing; it must be reconciled
 # to the complete opening balance sheet before finance sign-off.
 def _quick_cash_opening_check(conn,company,amount_irr,cutoff):
+    from datetime import date
+    if amount_irr <= 0 or amount_irr > 10**14:
+        raise HTTPException(422,"Positive cash amount required")
+    try:
+        date.fromisoformat(cutoff)
+    except ValueError:
+        raise HTTPException(422,"YYYY-MM-DD cutoff required")
     _ensure_posting_schema(conn)
     conn.execute(text("""
       CREATE TABLE IF NOT EXISTS quick_start_cash_openings(
@@ -2813,7 +2818,7 @@ def quick_start_cash_opening_apply(request:Request,amount_irr:int,cutoff:str,con
             "description":f"Opening cash register {cutoff}"},
            {"account_code":"3101","debit":0,"credit":amount_irr,
             "description":"Opening clearing; reconcile with complete starting balance sheet"}
-          ],company,voucher_date="2026-10-21",connection=conn)
+          ],company,voucher_date=cutoff,connection=conn)
         conn.execute(text("""
           INSERT INTO quick_start_cash_openings
             (company_id,amount_irr,voucher_id,cutoff,created_at)
