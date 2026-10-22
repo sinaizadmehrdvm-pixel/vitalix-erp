@@ -2467,3 +2467,42 @@ def quick_start_readiness(request: Request):
             "note":"Legacy source staging is not operational stock or a bank account. A bank account alone does not verify its cash balance. Existing customer openings are not imported twice.",
             "no_changes_performed":True,
         }
+
+# Quick-start source stock is separate from historical GL / cheques.
+@router.get("/quick-start/stock-preview")
+def quick_start_stock_preview(request: Request):
+    from decimal import Decimal
+    _require_admin(request)
+    company=current_company_id(request)
+    with engine.connect() as conn:
+        rows=conn.execute(text("""
+          SELECT payload_json FROM parasay_migration_staging
+          WHERE company_id=:company AND kind='inventory'
+        """),{"company":company}).scalars().all()
+        if not rows:
+            raise HTTPException(409,"No prior stock snapshot staged for this company")
+        source=[json.loads(x) for x in rows]
+        products=conn.execute(text(
+          "SELECT id,code,stock FROM products WHERE company_id=:company"
+        ),{"company":company}).mappings().all()
+        target={str(p["code"]):p for p in products}
+        source_codes=[str(row["Code"]) for row in source]
+        missing=[x for x in source_codes if x not in target]
+        duplicate=len(source_codes)!=len(set(source_codes)) or len(target)!=len(products)
+        negative=[{"code":str(x["Code"]),"quantity":str(x["NowAmount"])}
+                  for x in source if Decimal(str(x["NowAmount"] or "0"))<0]
+        existing_nonzero=sum(Decimal(str(p["stock"] or 0))!=0 for p in products)
+        movement=conn.execute(text("""
+          SELECT COUNT(*) FROM stock_movements sm
+          JOIN products p ON p.id=sm.product_id
+          WHERE p.company_id=:company
+        """),{"company":company}).scalar()
+        positive=sum(Decimal(str(x["NowAmount"] or 0))>0 for x in source)
+        return {"source_rows":len(source),"matched":len(source)-len(missing),
+          "source_positive":positive,"source_negative":negative,
+          "target_nonzero":existing_nonzero,"prior_movements":int(movement),
+          "duplicate_codes":bool(duplicate),"missing_codes":missing[:30],
+          "can_apply":len(source)==len(products) and not missing
+              and not duplicate and not negative and not existing_nonzero
+              and not movement,
+          "note":"Negative source quantities are not imported automatically. No accounting voucher is created."}
