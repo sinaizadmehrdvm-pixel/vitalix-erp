@@ -39,6 +39,9 @@ export default function DataImportCenter() {
   const [directStockFile, setDirectStockFile] = useState(null);
   const [directStockPreview, setDirectStockPreview] = useState(null);
   const [directBankPreview, setDirectBankPreview] = useState(null);
+  const [cashOpeningIrr, setCashOpeningIrr] = useState("");
+  const [cashOpeningCutoff, setCashOpeningCutoff] = useState("");
+  const [cashOpeningPreview, setCashOpeningPreview] = useState(null);
   const [parasayPackage, setParasayPackage] = useState(null);
   const [parasayPackagePreview, setParasayPackagePreview] = useState(null);
   const [parasayStageStatus, setParasayStageStatus] = useState(null);
@@ -274,6 +277,29 @@ export default function DataImportCenter() {
     }catch(error){toast.error(error.message);}
     finally{setParasayBusy(false);}
   }
+  async function cashOpeningAction(action){
+    const amount=Number(toEnglishDigits(String(cashOpeningIrr)).replace(/[,،٬\s]/g,""));
+    const cutoff=toEnglishDigits(cashOpeningCutoff).trim();
+    if(!Number.isSafeInteger(amount)||amount<=0||!/^\d{4}-\d{2}-\d{2}$/.test(cutoff)){
+      toast.error("مبلغ مثبت به ریال و تاریخ میلادی YYYY-MM-DD را وارد کنید");return;
+    }
+    if(action==="apply" && (!cashOpeningPreview?.can_apply ||
+      Number(cashOpeningPreview.amount_irr)!==amount ||cashOpeningPreview.cutoff!==cutoff ||
+      !window.confirm(`ثبت مانده افتتاحیه صندوق ${pd(amount)} ریال در ${pd(cutoff)}: بدهکار ۱۱۰۱، بستانکار تسویه افتتاحیه ۳۱۰۱. بدون دریافت نقدی جدید. تأیید می‌کنید؟`)))return;
+    setParasayBusy(true);
+    try{
+      const qs=new URLSearchParams({amount_irr:String(amount),cutoff});
+      if(action==="apply")qs.set("confirm",`POST_CASH_${amount}_${cutoff}`);
+      const res=await fetch(`${API_URL}/api/data-import/quick-start/cash-opening/${action}?${qs}`,{
+        method:action==="apply"?"POST":"GET",headers:getAuthHeaders()
+      });
+      const data=await res.json().catch(()=>({}));
+      if(!res.ok)throw new Error(typeof data.detail==="string"?data.detail:JSON.stringify(data.detail||"خطا در صندوق"));
+      if(action==="preview")setCashOpeningPreview(data);
+      else{setCashOpeningPreview(null);toast.success("سند مانده افتتاحیه صندوق ثبت شد");}
+    }catch(err){toast.error(err.message)}
+    finally{setParasayBusy(false)}
+  }
   async function directBanksAction(action){
     if(!directStockFile)return toast.error("همان فایل ZIP را انتخاب کنید");
     if(action==="apply" && (!directBankPreview?.can_import || !window.confirm("۱۷ حساب بانکی واقعی با مانده روز ثبت می‌شوند؛ آورده شخصی وارد بانک نمی‌شود و سند حسابداری ثبت نمی‌شود. تأیید؟")))return;
@@ -430,6 +456,19 @@ export default function DataImportCenter() {
           <p>وضعیت: {(directBankPreview.errors||[]).join("، ")||"موردی مشاهده نشد"}</p>
           <p>این کار سند تراز افتتاحیه نمی‌سازد؛ مانده صندوق و دفتر کل باید جداگانه تطبیق شوند.</p>
         </div>}
+      </div>
+      <div style={{marginTop:14,padding:12,border:"1px solid var(--erp-border)",borderRadius:14}}>
+        <strong>مانده افتتاحیه صندوق — مستقل از دریافت و پرداخت</strong>
+        <p style={{fontSize:13,color:"var(--erp-muted)"}}>مبلغ را به ریال و تاریخ پایان دوره را به میلادی وارد کنید. این ثبت یک سند تراز افتتاحیه با حساب واسط ۳۱۰۱ ایجاد می‌کند. دفتر کل هنوز نیازمند تطبیق نهایی است.</p>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+          <input type="text" inputMode="numeric" placeholder="مبلغ صندوق (ریال)" value={cashOpeningIrr} onChange={v=>{setCashOpeningIrr(v.target.value);setCashOpeningPreview(null);}} />
+          <input type="text" placeholder="تاریخ میلادی، نمونه 2026-10-21" value={cashOpeningCutoff} onChange={v=>{setCashOpeningCutoff(v.target.value);setCashOpeningPreview(null);}} />
+        </div>
+        <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
+          <button type="button" disabled={parasayBusy} onClick={()=>cashOpeningAction("preview")}>بررسی صندوق بدون ثبت</button>
+          <button type="button" disabled={!cashOpeningPreview?.can_apply||parasayBusy} onClick={()=>cashOpeningAction("apply")}>ثبت مانده افتتاحیه صندوق پس از تأیید</button>
+        </div>
+        {cashOpeningPreview&&<p style={{fontSize:13}}>مبلغ: {pd(cashOpeningPreview.amount_irr)} ریال | تاریخ: {pd(cashOpeningPreview.cutoff)} | خطاها: {(cashOpeningPreview.errors||[]).join("، ")||"ندارد"}</p>}
       </div>
       <button type="button" onClick={inspectQuickStartStock} style={{marginTop:12,marginInlineStart:8,padding:"10px 14px",borderRadius:12,fontWeight:700}}>کنترل موجودی کالا قبل از انتقال (بدون ثبت)</button>
       {stockPreflight && <div style={{padding:10,marginTop:10,borderRadius:10,border:"1px solid var(--erp-border)",fontSize:13}}>
