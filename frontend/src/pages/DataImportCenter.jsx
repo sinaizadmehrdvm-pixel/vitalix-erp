@@ -388,8 +388,8 @@ export default function DataImportCenter() {
     <button type="button" onClick={inspectQuickStart} style={{marginTop:12,padding:"10px 14px",borderRadius:12,fontWeight:700}}>بررسی وضعیت واقعی شروع کار (بدون ثبت)</button>
       <div style={{marginTop:14,padding:12,border:"1px solid var(--erp-border)",borderRadius:14}}>
         <strong>ورود سریع موجودی کالاهای موجود — بدون فاکتور و سند حسابداری</strong>
-        <p style={{fontSize:13,color:"var(--erp-muted)"}}>فقط فایل موجودی CSV را انتخاب کن. برنامه کد کالاها را تطبیق می‌دهد؛ کالاهای با موجودی منفی در مرحله اول ثبت نمی‌شوند.</p>
-        <input type="file" accept=".csv,text/csv" onChange={e=>{setDirectStockFile(e.target.files?.[0]||null);setDirectStockPreview(null);}}/>
+        <p style={{fontSize:13,color:"var(--erp-muted)"}}>همان فایل ZIP قبلی پاراسای یا فایل موجودی CSV را انتخاب کن. برنامه کد کالاها را تطبیق می‌دهد؛ موجودی منفی ثبت نمی‌شود.</p>
+        <input type="file" accept=".csv,.zip,text/csv,application/zip" onChange={e=>{setDirectStockFile(e.target.files?.[0]||null);setDirectStockPreview(null);}}/>
         <div style={{display:"flex",gap:8,flexWrap:"wrap",marginTop:10}}>
           <button type="button" disabled={!directStockFile||parasayBusy} onClick={()=>directStockAction("preview")} style={{padding:10,borderRadius:10}}>بررسی فایل موجودی</button>
           <button type="button" disabled={!directStockPreview?.can_import||parasayBusy} onClick={()=>directStockAction("apply")} style={{padding:10,borderRadius:10}}>ثبت فقط موجودی مثبت پس از تأیید</button>
