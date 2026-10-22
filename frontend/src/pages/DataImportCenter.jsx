@@ -36,6 +36,7 @@ export default function DataImportCenter() {
   const [parasayBusy, setParasayBusy] = useState(false);
   const [parasayPackage, setParasayPackage] = useState(null);
   const [parasayPackagePreview, setParasayPackagePreview] = useState(null);
+  const [parasayStageStatus, setParasayStageStatus] = useState(null);
   const [parasayPackageApplied, setParasayPackageApplied] = useState(false);
   const [parasayFinalReview, setParasayFinalReview] = useState(null);
   const [parasayNegativeAcknowledged, setParasayNegativeAcknowledged] = useState(false);
@@ -252,6 +253,19 @@ export default function DataImportCenter() {
     }catch(error){toast.error(error.message)}
     finally{setParasayBusy(false)}
   }
+  async function inspectParasayStage() {
+    setParasayBusy(true);
+    try {
+      const response = await fetch(`${API_URL}/api/data-import/parasay-stage/status`, {headers:getAuthHeaders()});
+      const info = await response.json().catch(()=>({}));
+      if(!response.ok)throw new Error(typeof info.detail==="string"?info.detail:"بررسی وضعیت ناموفق بود");
+      const checks=await fetch(`${API_URL}/api/accounting/treasury/parasay-opening-cheques`,{headers:getAuthHeaders()});
+      const chequeData=await checks.json().catch(()=>({}));
+      if(!checks.ok)throw new Error(typeof chequeData.detail==="string"?chequeData.detail:"بررسی چک‌های انتقالی ناموفق بود");
+      setParasayStageStatus({...info,cheques:(chequeData.items||[]).length});
+    } catch(error){toast.error(error.message);}
+    finally{setParasayBusy(false);}
+  }
   async function parasayPackageAction(action) {
     if (!parasayPackage) return toast.error("ابتدا بسته ZIP را انتخاب کنید");
     if (action === "apply") {
@@ -334,6 +348,21 @@ export default function DataImportCenter() {
     <section style={{ ...card, padding: 18, marginBottom: 14 }}>
       <h2 style={{ marginTop: 0, fontSize: 19 }}>مرکز انتقال باقی‌مانده پاراسای — هایپر دکتر</h2>
       <p style={{ color: "var(--erp-muted)" }}>سه فایل اصلی قبلاً استخراج شده‌اند. ابتدا با کنترل جمع و تعداد خوانده و در جدول مستقل ذخیره می‌شوند؛ بدون افزایش موجودی، تغییر مانده مشتریان یا صدور سند جدید. ورود عملیاتی پس از تطبیق انبار، حساب‌ها و ۳۱۰۱ انجام می‌شود.</p>
+      <div style={{border:"1px solid var(--erp-border)",borderRadius:12,padding:12,marginBottom:12}}>
+        <button type="button" disabled={parasayBusy} onClick={inspectParasayStage} style={{padding:"9px 13px",borderRadius:9,fontWeight:700}}>نمایش وضعیت واقعی اطلاعات مهاجرت (فقط خواندن)</button>
+        {parasayStageStatus&&<div style={{marginTop:10,fontSize:13}}>
+          <p>شرکت فعال: {pd(parasayStageStatus.company_id)} — این گزارش صرفاً خواندنی است.</p>
+          {[
+            ["کالا / موجودی منبع", "inventory",1490],
+            ["بانک‌های منبع","banks",18],
+            ["مانده معین منبع","gl_residual",283],
+            ["کدینگ کل","chart_total",43],
+            ["کدینگ معین","chart_moien",283],
+          ].map(([name,kind,expected])=><p key={kind}>{name}: {pd(parasayStageStatus.staged_counts?.[kind]||0)} از {pd(expected)}</p>)}
+          <p>چک‌های انتقالی: {pd(parasayStageStatus.cheques)} از ۲۸</p>
+          <p style={{color:"var(--erp-muted)"}}>اگر هر مقدار کمتر از تعداد مورد انتظار است، از ثبت دستی یا تکرار بسته خودداری کنید؛ ابتدا داده‌های موجود تطبیق داده شوند.</p>
+        </div>}
+      </div>
       <div style={{ padding: 13, borderRadius: 14, border: "1px solid var(--erp-accent)", marginBottom: 15 }}>
         <h3 style={{ margin: "0 0 8px" }}>بارگذاری یکجای بسته کامل ZIP پاراسای (شش مجموعه)</h3>
         <p style={{ color: "var(--erp-muted)", fontSize: 13 }}>شش مجموعه: ۱۴۹۰ کالا، ۱۸ بانک، ۲۸۳ مانده معین، ۴۳ حساب کل، ۲۸۳ حساب معین و ۲۸ چک. این مرحله فقط اطلاعات اولیه را ذخیره می‌کند؛ موجودی و حسابداری تغییر نمی‌کند.</p>
